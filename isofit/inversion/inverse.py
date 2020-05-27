@@ -47,6 +47,7 @@ class Inversion:
 
         config: InversionConfig = full_config.implementation.inversion
 
+        self.costs = []
         self.lasttime = time.time()
         self.fm = forward
         self.hashtable = OrderedDict()  # Hash table for caching inverse matrices
@@ -79,14 +80,14 @@ class Inversion:
         # Configure Levenberg-Marquardt
         self.least_squares_params = {
             'method': 'trf',
-            'max_nfev': 20,
+            'max_nfev': 50,
             'bounds': (self.fm.bounds[0][self.inds_free] + eps,
                        self.fm.bounds[1][self.inds_free] - eps),
             'x_scale': self.fm.scale[self.inds_free],
-            'xtol': 1e-4,
-            'ftol': 1e-4,
-            'gtol': 1e-4,
-            'tr_solver': 'exact'
+            'xtol': None,
+            'ftol': 1e-2,
+            'gtol': None,
+            'tr_solver': 'lsmr'
         }
 
     def full_statevector(self, x_free):
@@ -121,8 +122,8 @@ class Inversion:
 
 
     def calc_prior(self, x, geom):
-        """Calculate prior distribution of radiance. This depends on the 
-        location in the state space. Return the inverse covariance and 
+        """Calculate prior distribution of radiance. This depends on the
+        location in the state space. Return the inverse covariance and
         its square root (for non-quadratic error residual calculation)."""
 
         xa = self.fm.xa(x, geom)
@@ -131,7 +132,7 @@ class Inversion:
         return xa, Sa, Sa_inv, Sa_inv_sqrt
 
     def calc_posterior(self, x, geom, meas):
-        """Calculate posterior distribution of state vector. This depends 
+        """Calculate posterior distribution of state vector. This depends
         both on the location in the state space and the radiance (via noise)."""
 
         xa = self.fm.xa(x, geom)
@@ -157,8 +158,8 @@ class Inversion:
 
     def calc_Seps(self, x, meas, geom):
         """Calculate (zero-mean) measurement distribution in radiance terms.
-        This depends on the location in the state space. This distribution is 
-        calculated over one or more subwindows of the spectrum. Return the 
+        This depends on the location in the state space. This distribution is
+        calculated over one or more subwindows of the spectrum. Return the
         inverse covariance and its square root."""
 
         Seps = self.fm.Seps(x, meas, geom)
@@ -188,7 +189,7 @@ class Inversion:
              xopt           - the converged state vector solution"""
 
         self.counts = 0
-        costs, solutions = [], []
+        self.costs, solutions = [], []
 
         # Simulations are easy - return the initial state vector
         if self.mode == 'simulation' or meas is None:

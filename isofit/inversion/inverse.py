@@ -306,12 +306,12 @@ class Inversion:
                 x_full_solution = self.full_statevector(xopt.x)
                 trajectory.append(x_full_solution)
                 solutions.append(trajectory)
-                costs.append(np.sqrt(np.power(xopt.fun, 2).sum()))
+                self.costs.append(np.sqrt(np.power(xopt.fun, 2).sum()))
             except scipy.linalg.LinAlgError:
                 logging.warning('Optimization failed to converge')
                 solutions.append(trajectory)
-                costs.append(9e99)
-        return np.array(solutions[np.argmin(costs)])
+                self.costs.append(9e99)
+        return np.array(solutions[np.argmin(self.costs)])
 
 
     def forward_uncertainty(self, x, meas, geom):

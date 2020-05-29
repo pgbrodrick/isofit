@@ -587,6 +587,7 @@ class IO:
             # Form the MATLAB dictionary object and write to file
             mdict = {
                 'costs': self.iv.costs,
+                'grid_solutions': self.iv.store_solutions,
                 'K': K,
                 'G': G,
                 'S_hat': S_hat,

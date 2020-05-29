@@ -48,6 +48,7 @@ class Inversion:
         config: InversionConfig = full_config.implementation.inversion
 
         self.costs = []
+        self.store_solutions = []
         self.lasttime = time.time()
         self.fm = forward
         self.hashtable = OrderedDict()  # Hash table for caching inverse matrices
@@ -97,8 +98,8 @@ class Inversion:
         self.least_squares_params = {
             'method': 'trf',
             'max_nfev': 50,
-            'bounds': (self.fm.bounds[0][self.inds_free] + eps,
-                       self.fm.bounds[1][self.inds_free] - eps),
+            'bounds': (self.fm.bounds[0][self.inds_free],
+                       self.fm.bounds[1][self.inds_free]),
             'x_scale': self.fm.scale[self.inds_free],
             'xtol': None,
             'ftol': 1e-2,
@@ -291,7 +292,11 @@ class Inversion:
 
         for combo in combo_values:
 
-            self.x_fixed = combo
+            if self.grid_as_starting_points:
+                x_preseed = combo
+            else:
+                self.x_fixed = combo
+                x_preseed = None
             trajectory = []
 
             # Calculate the initial solution, if needed.
@@ -311,7 +316,7 @@ class Inversion:
             # Regardless of anything we did for the heuristic guess, bring the
             # static preseed back into play (only does anything if inds_preseed
             # is not blank)
-            x0[self.inds_preseed] = combo
+            x0[self.inds_preseed] = x_preseed
 
             # Find the full state vector with bounds checked
             x = self.full_statevector(x0)
@@ -351,6 +356,7 @@ class Inversion:
                 trajectory.append(x_full_solution)
                 solutions.append(trajectory)
                 self.costs.append(np.sqrt(np.power(xopt.fun, 2).sum()))
+                self.store_solutions.append(x_full_solution)
             except scipy.linalg.LinAlgError:
                 logging.warning('Optimization failed to converge')
                 solutions.append(trajectory)

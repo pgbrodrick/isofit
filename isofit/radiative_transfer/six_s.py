@@ -226,22 +226,22 @@ class SixSRT(TabularRT):
 
         TabularRT.build_lut(self, rebuild)
 
-        sixs_outputs = []
-        for point, fn in zip(self.points, self.files):
-            sixs_outputs.append(self.load_rt(fn))
+        #sixs_outputs = []
+        #for point, fn in zip(self.points, self.files):
+        #    sixs_outputs.append(self.load_rt(fn))
 
-        self.cache = {}
-        dims_aug = self.lut_dims + [self.n_chan]
-        for key in self.lut_quantities:
-            temp = np.zeros(dims_aug, dtype=float)
-            for sixs_output, point in zip(sixs_outputs, self.points):
-                ind = [np.where(g == p)[0] for g, p in
-                       zip(self.lut_grids, point)]
-                ind = tuple(ind)
-                temp[ind] = sixs_output[key]
+        #self.cache = {}
+        #dims_aug = self.lut_dims + [self.n_chan]
+        #for key in self.lut_quantities:
+        #    temp = np.zeros(dims_aug, dtype=float)
+        #    for sixs_output, point in zip(sixs_outputs, self.points):
+        #        ind = [np.where(g == p)[0] for g, p in
+        #               zip(self.lut_grids, point)]
+        #        ind = tuple(ind)
+        #        temp[ind] = sixs_output[key]
 
-            self.luts[key] = VectorInterpolator(self.lut_grids, temp,
-                                                self.lut_interp_types)
+        #    self.luts[key] = VectorInterpolator(self.lut_grids, temp,
+        #                                        self.lut_interp_types)
 
     def _lookup_lut(self, point):
         ret = {}

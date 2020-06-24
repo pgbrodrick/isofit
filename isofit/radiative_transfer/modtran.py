@@ -325,27 +325,27 @@ class ModtranRT(TabularRT):
                         raise KeyError('MODTRAN H2O lut grid is invalid - see logs for details.')
 
 
-        TabularRT.build_lut(self, rebuild)
+        #TabularRT.build_lut(self, rebuild)
 
-        mod_outputs = []
-        for point, fn in zip(self.points, self.files):
-            mod_outputs.append(self.load_rt(fn))
+        #mod_outputs = []
+        #for point, fn in zip(self.points, self.files):
+        #    mod_outputs.append(self.load_rt(fn))
 
-        self.wl = mod_outputs[0]['wl']
-        self.solar_irr = mod_outputs[0]['sol']
-        self.coszen = np.cos(mod_outputs[0]['solzen'] * np.pi / 180.0)
+        #self.wl = mod_outputs[0]['wl']
+        #self.solar_irr = mod_outputs[0]['sol']
+        #self.coszen = np.cos(mod_outputs[0]['solzen'] * np.pi / 180.0)
 
-        dims_aug = self.lut_dims + [self.n_chan]
-        for key in self.modtran_lut_names:
-            temp = np.zeros(dims_aug, dtype=float)
-            for mod_output, point in zip(mod_outputs, self.points):
-                ind = [np.where(g == p)[0] for g, p in
-                       zip(self.lut_grids, point)]
-                ind = tuple(ind)
-                temp[ind] = mod_output[key]
+        #dims_aug = self.lut_dims + [self.n_chan]
+        #for key in self.modtran_lut_names:
+        #    temp = np.zeros(dims_aug, dtype=float)
+        #    for mod_output, point in zip(mod_outputs, self.points):
+        #        ind = [np.where(g == p)[0] for g, p in
+        #               zip(self.lut_grids, point)]
+        #        ind = tuple(ind)
+        #        temp[ind] = mod_output[key]
 
-            self.luts[key] = VectorInterpolator(self.lut_grids, temp,
-                                                self.lut_interp_types)
+        #    self.luts[key] = VectorInterpolator(self.lut_grids, temp,
+        #                                        self.lut_interp_types)
 
 
     def rebuild_cmd(self, point, fn):

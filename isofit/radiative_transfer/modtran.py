@@ -373,13 +373,25 @@ class ModtranRT(TabularRT):
                 # MODTRAN 6.0 convention treats negative visibility as AOT550
                 recursive_replace(param, 'VIS', -val)
 
+            elif key == 'NH3':
+                if 'S_UMIX' in param[0]['MODTRANINPUT']['ATMOSPHERE'].keys():
+                    base_mix = param[0]['MODTRANINPUT']['ATMOSPHERE']['S_UMIX']
+                else:
+                    base_mix = np.zeros(10).tolist()
+                base_mix[-3] = val
+                param[0]['MODTRANINPUT']['ATMOSPHERE']['S_UMIX'] = base_mix
+                param[0]['MODTRANINPUT']['ATMOSPHERE']['C_PROF'] = 1
+
+            elif key == 'CO2' or key == 'CO2MX':
+                param[0]['MODTRANINPUT']['ATMOSPHERE']['CO2MX'] = val
+
             elif key == 'FILTNM':
                 param[0]['MODTRANINPUT']['SPECTRAL']['FILTNM'] = val
             
             # Geometry parameters we want to populate even if unassigned
             elif key in ['H1ALT', 'IDAY', 'TRUEAZ','OBSZEN', 'GMTIME' ]:
                 param[0]['MODTRANINPUT']['GEOMETRY'][key] = val
-            
+
             elif key == 'AIRT_DELTA_K':
                 # If there is no profile already provided ...
                 if param[0]['MODTRANINPUT']['ATMOSPHERE']['MODEL'] != "ATM_USER_ALT_PROFILE":

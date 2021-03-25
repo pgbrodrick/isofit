@@ -377,7 +377,7 @@ class ModtranRT(TabularRT):
                 if 'S_UMIX' in param[0]['MODTRANINPUT']['ATMOSPHERE'].keys():
                     base_mix = param[0]['MODTRANINPUT']['ATMOSPHERE']['S_UMIX']
                 else:
-                    base_mix = np.zeros(10).tolist()
+                    base_mix = np.ones(10).tolist()
                 base_mix[-3] = val
                 param[0]['MODTRANINPUT']['ATMOSPHERE']['S_UMIX'] = base_mix
                 param[0]['MODTRANINPUT']['ATMOSPHERE']['C_PROF'] = 1

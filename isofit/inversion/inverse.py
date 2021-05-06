@@ -26,7 +26,7 @@ from scipy.optimize import least_squares
 import scipy.linalg
 
 from isofit.core.common import svd_inv, svd_inv_sqrt, eps, combos, conditional_gaussian
-from .inverse_simple import invert_simple
+from .inverse_simple import invert_simple, invert_simple_thermal
 from isofit.configs import Config
 from isofit.core.forward import ForwardModel
 from isofit.configs.sections.implementation_config import InversionConfig
@@ -294,7 +294,7 @@ class Inversion:
             trajectory = []
 
             # Calculate the initial solution, if needed.
-            x0 = invert_simple(self.fm, meas, geom)
+            x0 = invert_simple_thermal(self.fm, meas, geom, combo[-1])
             x0 = x0[self.inds_free]
 
             # Catch any state vector elements outside of bounds

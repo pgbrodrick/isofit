@@ -137,6 +137,112 @@ def invert_algebraic(surface, RT: RadiativeTransfer, instrument, x_surface,
     coeffs = rhoatm, sphalb, transm, solar_irr, coszen, transup
     return rfl_est, Ls, coeffs
 
+def invert_simple_thermal(forward, meas, geom, temp):
+    """Find an initial guess at the state vector. This currently uses
+    traditional (non-iterative, heuristic) atmospheric correction."""
+
+    surface = forward.surface
+    RT = forward.RT
+    instrument = forward.instrument
+
+    vswir_present = False
+    if any(forward.surface.wl < 3000):
+        vswir_present = True
+
+    tir_present = False
+    if any(forward.surface.wl > 7000):
+        tir_present = True
+
+    # First step is to get the atmosphere. We start from the initial state
+    # and estimate atmospheric terms using traditional heuristics.
+    x = forward.init.copy()
+    x_surface, x_RT, x_instrument = forward.unpack(x)
+    emissive_rad = emissive_radiance(np.ones(len(forward.surface.wl))*0.9, temp, forward.surface.wl)
+
+    irrad = meas - emissive_rad
+
+    if vswir_present:
+        x[forward.idx_RT] = heuristic_atmosphere(RT, instrument,
+                                                 x_RT, x_instrument, irrad, geom)
+
+    # Now, with atmosphere fixed, we can invert the radiance algebraically
+    # via Lambertian approximations to get reflectance
+    x_surface, x_RT, x_instrument = forward.unpack(x)
+    rfl_est, Ls_est, coeffs = invert_algebraic(surface, RT,
+                                               instrument, x_surface, x_RT,
+                                               x_instrument, irrad, geom)
+
+    # Condition thermal part on the VSWIR portion. Only works for
+    # Multicomponent surfaces. Finds the cluster nearest the VSWIR heuristic
+    # inversion and uses it for the TIR suface initialization.
+    if tir_present:
+        tir_idx = np.where(forward.surface.wl > 7000)[0]
+
+        if vswir_present:
+            x_surface_temp = x_surface.copy()
+            x_surface_temp[:len(rfl_est)] = rfl_est
+            mu = forward.surface.xa(x_surface_temp, geom)
+            rfl_est[tir_idx] = mu[tir_idx]
+        else:
+            rfl_est = 0.03 * np.ones(len(forward.surface.wl))
+
+    # Now we have an estimated reflectance. Fit the surface parameters.
+    x_surface[forward.idx_surface] = forward.surface.fit_params(rfl_est, geom)
+
+    # Find temperature of emissive surfaces
+    if tir_present:
+
+        # Estimate the total radiance at sensor, leaving out surface emission
+        # Radiate transfer calculations could take place at high spectral resolution
+        # so we upsample the surface reflectance
+        rfl_hi = forward.upsample(forward.surface.wl, rfl_est)
+        rhoatm, sphalb, transm, solar_irr, coszen, transup = coeffs
+
+        L_atm = RT.get_L_atm(x_RT, geom)
+        L_down_transmitted = RT.get_L_down_transmitted(x_RT, geom)
+        L_total_without_surface_emission = \
+            L_atm + L_down_transmitted * rfl_hi / (1. - sphalb * rfl_hi)
+
+        # These tend to have high transmission factors; the emissivity of most
+        # materials is nearly 1 for these bands, so they are good for
+        # initializing the surface temperature.
+        clearest_wavelengths = [10125., 10390.00, 10690.00]
+
+        # This is fragile if other instruments have different wavelength
+        # spacing or range
+        clearest_indices = [np.argmin(np.absolute(RT.wl - w))
+                            for w in clearest_wavelengths]
+
+        # Error function for nonlinear temperature fit
+        def err(z):
+            T = z
+            emissivity = forward.surface.emissivity_for_surface_T_init
+            Ls_est, d = emissive_radiance(emissivity, T,
+                                          forward.surface.wl[clearest_indices])
+            resid = transup[clearest_indices] * Ls_est + \
+                L_total_without_surface_emission[clearest_indices] - \
+                meas[clearest_indices]
+            return sum(resid**2)
+
+        # Fit temperature, set bounds,  and set the initial values
+        idx_T = forward.surface.surf_temp_ind
+        Tinit = np.array([forward.surface.init[idx_T]])
+        Tbest = minimize(err, Tinit).x
+        T = max(forward.surface.bounds[idx_T][0]+eps,
+                min(Tbest, forward.surface.bounds[idx_T][1]-eps))
+        x_surface[idx_T] = Tbest
+        forward.surface.init[idx_T] = T
+
+    # Update the full state vector
+    x[forward.idx_surface] = x_surface
+
+    # We record these initial values in the geometry object - the only
+    # "stateful" part of the retrieval
+    geom.x_surf_init = x[forward.idx_surface]
+    geom.x_RT_init = x[forward.idx_RT]
+
+    return x
+
 
 def invert_simple(forward, meas, geom):
     """Find an initial guess at the state vector. This currently uses

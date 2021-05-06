@@ -56,6 +56,12 @@ class SurfaceConfig(BaseConfigSection):
         self._surface_T_prior_sigma_degK_type = float
         self.surface_T_prior_sigma_degK = 1.
 
+        self._thermal_bounds_type = list()
+        self.thermal_bounds = [250.0,400.0]
+
+        self._thermal_init_type = float
+        self.thermal_init = 300.
+
         self.set_config_options(sub_configdic)
 
     def _check_config_validity(self) -> List[str]:

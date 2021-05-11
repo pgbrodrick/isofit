@@ -157,7 +157,7 @@ def invert_simple_thermal(forward, meas, geom, temp):
     # and estimate atmospheric terms using traditional heuristics.
     x = forward.init.copy()
     x_surface, x_RT, x_instrument = forward.unpack(x)
-    emissive_rad = emissive_radiance(np.ones(len(forward.surface.wl))*0.9, temp, forward.surface.wl)
+    emissive_rad, _ = emissive_radiance(np.ones(len(forward.surface.wl))*0.95, temp, forward.surface.wl)
 
     irrad = meas - emissive_rad
 

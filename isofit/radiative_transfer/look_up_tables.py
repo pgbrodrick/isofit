@@ -63,7 +63,11 @@ class TabularRT:
     def __init__(self, engine_config: RadiativeTransferEngineConfig, full_config: Config):
 
         self.implementation_config: ImplementationConfig = full_config.implementation
-        self.wl, self.fwhm = common.load_wavelen(full_config.forward_model.instrument.wavelength_file)
+        if engine_config.wavelength_file is not None:
+            wavelength_file = engine_config.wavelength_file 
+        else:
+            wavelength_file = full_config.forward_model.instrument.wavelength_file
+        self.wl, self.fwhm = common.load_wavelen(wavelength_file)
         if engine_config.wavelength_range is not None:
             valid_wl = np.logical_and(self.wl >= engine_config.wavelength_range[0],
                                       self.wl <= engine_config.wavelength_range[1])
@@ -74,6 +78,7 @@ class TabularRT:
 
         self.auto_rebuild = full_config.implementation.rte_auto_rebuild
         self.configure_and_exit = full_config.implementation.rte_configure_and_exit
+        self.implementation_mode = full_config.implementation.mode
 
         # We use a sorted dictionary here so that filenames for lookup
         # table (LUT) grid points are always constructed the same way, with
@@ -130,9 +135,10 @@ class TabularRT:
         for key, grid_values in self.lut_grid_config.items():
 
             # do some quick checks on the values
-            if len(grid_values) == 1:
-                err = 'Only 1 value in LUT grid {}. ' +\
-                    '1-d LUT grids cannot be interpreted.'.format(key)
+            # For forward (simulation) mode, 1-dimensional LUT grids are OK!
+            if len(grid_values) == 1 and not self.implementation_mode == "simulation":
+                err = 'Only 1 value in LUT grid {}. '.format(key) +\
+                    '1-d LUT grids cannot be interpreted.'
                 raise ValueError(err)
             if grid_values != sorted(grid_values):
                 logging.error('Lookup table grid needs ascending order')

@@ -367,6 +367,7 @@ class Inversion:
             # Initialize and invert
             try:
                 xopt = least_squares(err, x0, jac=jac, **self.least_squares_params)
+                #logging.info(f'Number of fe: {xopt.nfev}.  Number of je: {xopt.njev}')
                 x_full_solution = self.full_statevector(xopt.x)
                 trajectory.append(x_full_solution)
                 solutions.append(trajectory)
@@ -376,7 +377,6 @@ class Inversion:
                 solutions.append(trajectory)
                 costs.append(9e99)
 
-        #logging.info(f'Number of iterations: {len(costs)}')
         final_solution = np.array(solutions[np.argmin(costs)])
         return final_solution
 

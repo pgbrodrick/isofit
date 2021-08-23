@@ -37,7 +37,7 @@ eps = 1e-5
 
 ### Classes ###
 
-class VectorInterpolator:
+class VectorInterpolatorOld:
     """ Linear look up table interpolator.  Support linear interpolation through radial space by expanding the look
         up tables with sin and cos dimensions.
 
@@ -154,7 +154,7 @@ class VectorInterpolator:
 
         return res
 
-class VectorInterpolatorNew:
+class VectorInterpolator:
     """Multilinear interpolation for even regular grids, which we
     expect to be using. The arguments are the following:
 
@@ -250,8 +250,7 @@ class VectorInterpolatorNew:
         self.ga = data
         self.bw = (self.gt[:,1] - self.gt[:,0])/(self.gt[:,2] - 1) # binwidths
         self.n = data.shape[-1]
-        print(self.n)
-
+        print(len(grid_input), data_input.shape, len(lut_interp_types))
 
     #@profile
     def __call__(self, points): 
@@ -262,19 +261,19 @@ class VectorInterpolatorNew:
         if self.single_point_data is not None:
             return self.single_point_data
 
-        x = np.zeros((self.n, len(points) +
+        x = np.zeros((len(points) +
                       np.sum(self.lut_interp_types != 'n')))
         offset_count = 0
         for i in range(len(points)):
             if self.lut_interp_types[i] == 'n':
-                x[:, i + offset_count] = points[i]
+                x[ i + offset_count] = points[i]
             elif self.lut_interp_types[i] == 'r':
-                x[:, i + offset_count] = np.cos(points[i])
-                x[:, i + 1 + offset_count] = np.sin(points[i])
+                x[ i + offset_count] = np.cos(points[i])
+                x[ i + 1 + offset_count] = np.sin(points[i])
                 offset_count += 1
             elif self.lut_interp_types[i] == 'd':
-                x[:, i + offset_count] = np.cos(points[i] / 180. * np.pi)
-                x[:, i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
+                x[ i + offset_count] = np.cos(points[i] / 180. * np.pi)
+                x[ i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
                 offset_count += 1
 
 
@@ -286,16 +285,25 @@ class VectorInterpolatorNew:
         # Set the data in 'cube' to be the data that we want to
         # interpolate:
         idx = [slice(i, i+2) for i in inds0]
-        print(len(tuple(idx)))
-        print(tuple(idx)[0])
-        print(self.ga.shape)
-        cube = np.copy(self.ga[tuple(idx)], order='A')
+        if len(idx) == 1:
+            idx = idx[0]
+        else:
+            #print(idx)
+            idx = idx[0]
+            #idx = tuple(idx)
+        #print(len(tuple(idx)))
+        #print(tuple(idx)[0])
+        #print(self.ga.shape)
+        #print(x.shape, points.shape)
+        #print(tuple(idx))
+        cube = np.copy(self.ga[idx,:], order='A')
+        #print(cube.shape)
 
         for i, di in enumerate(deltas):
             # Eliminate those indexes where we are outside grid range
-            if x[i] > self.gt[i,1]:
-                cube = cube[1]
-            elif x[i] < self.gt[i,0]:
+            if x[i] >= self.gt[i,1]:
+                cube = cube[0]
+            elif x[i] <= self.gt[i,0]:
                 cube = cube[0]
             # Otherwise eliminate index by linear interpolation
             else:

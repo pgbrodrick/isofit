@@ -357,7 +357,7 @@ def main(rawargs=None):
         logging.info('Empirical line inference')
         # Determine the number of neighbors to use.  Provides backwards stability and works
         # well with defaults, but is arbitrary
-        nneighbors = int(round(3950 / 9 - 35/36 * args.segmentation_size))
+        nneighbors = max(int(round(3950 / 9 - 35/36 * args.segmentation_size)), 5)
         empirical_line(reference_radiance_file=paths.rdn_subs_path,
                        reference_reflectance_file=paths.rfl_subs_path,
                        reference_uncertainty_file=paths.uncert_subs_path,

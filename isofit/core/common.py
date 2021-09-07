@@ -242,14 +242,19 @@ class VectorInterpolator:
 
         tuple_grid = []
         for gp in grid:
-            tuple_grid.append(tuple((np.min(gp),np.max(gp),len(gp))))
+            tuple_grid.append(tuple((np.min(gp),np.max(gp),len(gp)+1)))
         tuple_grid = tuple(tuple_grid)
 
         self.gt = np.array(tuple_grid)
         self.ga_orig = data
         self.ga = data
-        self.bw = (self.gt[:,1] - self.gt[:,0])/(self.gt[:,2] - 1) # binwidths
+        self.bw = (self.gt[:,1] - self.gt[:,0])/(self.gt[:,2] - 2) # binwidths
         self.n = data.shape[-1]
+        self.maxbaseinds = (self.gt[:, 2] - 2).astype(int)
+        print(f'data input shape: {data_input.shape}')
+        print(f'gt: {self.gt}')
+        print(f'bw: {self.bw}')
+        print(f'ga shape: {self.ga.shape}')
         print(len(grid_input), data_input.shape, len(lut_interp_types))
 
     #@profile
@@ -279,25 +284,18 @@ class VectorInterpolator:
 
         indpos = (x - self.gt[:,0])/self.bw
         inds0 = indpos.astype(int)
+        #inds0 = [min(indpos.astype(int), self.gt[j, 2] - 2).astype(int) for j in range(self.gt.shape[0])]
         deltas = indpos%1
         deltas1 = 1 - deltas
 
         # Set the data in 'cube' to be the data that we want to
         # interpolate:
-        idx = [slice(i, i+2) for i in inds0]
-        if len(idx) == 1:
-            idx = idx[0]
-        else:
-            #print(idx)
-            idx = idx[0]
-            #idx = tuple(idx)
-        #print(len(tuple(idx)))
-        #print(tuple(idx)[0])
-        #print(self.ga.shape)
-        #print(x.shape, points.shape)
-        #print(tuple(idx))
-        cube = np.copy(self.ga[idx,:], order='A')
-        #print(cube.shape)
+        #idx = [slice(i, i+2) for i in inds0]
+        idx = [slice(max(min(self.maxbaseinds[j], i), 0), max(min(self.maxbaseinds[j] + 2, i + 2), 2)) for j, i in
+              enumerate(inds0)]
+
+        cube = np.copy(self.ga[tuple(idx)], order='A')
+        #print(cube.shape, idx, points, inds0, self.maxbaseinds)
 
         for i, di in enumerate(deltas):
             # Eliminate those indexes where we are outside grid range
@@ -306,6 +304,7 @@ class VectorInterpolator:
             elif x[i] <= self.gt[i,0]:
                 cube = cube[0]
             # Otherwise eliminate index by linear interpolation
+
             else:
                 cube[0] *= deltas1[i]
                 cube[1] *= di

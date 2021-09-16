@@ -242,13 +242,13 @@ class VectorInterpolator:
 
         tuple_grid = []
         for gp in grid:
-            tuple_grid.append(tuple((np.min(gp),np.max(gp),len(gp)+1)))
+            tuple_grid.append(tuple((np.min(gp),np.max(gp),len(gp))))
         tuple_grid = tuple(tuple_grid)
 
         self.gt = np.array(tuple_grid)
         self.ga_orig = data
         self.ga = data
-        self.bw = (self.gt[:,1] - self.gt[:,0])/(self.gt[:,2] - 2) # binwidths
+        self.bw = (self.gt[:,1] - self.gt[:,0])/(self.gt[:,2] - 1) # binwidths
         self.n = data.shape[-1]
         self.maxbaseinds = (self.gt[:, 2] - 2).astype(int)
         print(f'data input shape: {data_input.shape}')
@@ -300,7 +300,7 @@ class VectorInterpolator:
         for i, di in enumerate(deltas):
             # Eliminate those indexes where we are outside grid range
             if x[i] >= self.gt[i,1]:
-                cube = cube[0]
+                cube = cube[1]
             elif x[i] <= self.gt[i,0]:
                 cube = cube[0]
             # Otherwise eliminate index by linear interpolation

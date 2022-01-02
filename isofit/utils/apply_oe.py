@@ -189,13 +189,40 @@ def main(rawargs=None):
         
     dayofyear = dt.timetuple().tm_yday
 
-    h_m_s, day_increment, mean_path_km, mean_to_sensor_azimuth, mean_to_sensor_zenith, valid, \
-    to_sensor_azimuth_lut_grid, to_sensor_zenith_lut_grid = get_metadata_from_obs(paths.obs_working_path, lut_params)
+    h_m_s, day_increment, mean_to_sensor_azimuth, mean_to_sensor_zenith, to_sensor_azimuth_lut_grid, \
+        to_sensor_zenith_lut_grid, mean_latitude, mean_longitude, mean_elevation_km, mean_altitude_km, \
+        elevation_lut_grid, altitude_lut_grid = \
+        get_metadata_from_obs_and_loc(paths.obs_working_path, paths.loc_working_path, lut_params)
+
+    if elevation_lut_grid is not None and np.any(elevation_lut_grid < 0):
+        to_rem = elevation_lut_grid[elevation_lut_grid < 0].copy()
+        elevation_lut_grid[elevation_lut_grid< 0] = 0
+        elevation_lut_grid = np.unique(elevation_lut_grid)
+        logging.info("Scene contains target lut grid elements < 0 km, and uses 6s (via sRTMnet).  6s does not "
+                     f"support targets below sea level in km units.  Setting grid points {to_rem} to 0.")
+
+    if args.emulator_base is not None and mean_altitude_km > 99:
+        logging.info('Adjusting altitude to 99 km for integration with 6S, because emulator is chosen.')
+        mean_altitude_km = 99
+
+    if altitude_lut_grid is not None and np.any(altitude_lut_grid > 99):
+        to_rem = altitude_lut_grid[altitude_lut_grid > 99].copy()
+        altitude_lut_grid[altitude_lut_grid > 99] = 99
+        altitude_lut_grid = np.unique(altitude_lut_grid)
+        logging.info("Scene contains target lut grid altitude elements > 99 km, and uses 6s (via sRTMnet). 6s does not "
+                     f"support altitude 99 km.  Setting grid points {to_rem} to 0.")
 
     if day_increment:
         dayofyear += 1
 
     gmtime = float(h_m_s[0] + h_m_s[1] / 60.)
+
+    logging.info('Observation means:')
+    logging.info(f'To-sensor Zenith (deg): {mean_to_sensor_zenith}')
+    logging.info(f'To-sensor Azimuth (deg): {mean_to_sensor_azimuth}')
+    logging.info(f'Altitude (km): {mean_altitude_km}')
+    logging.info(f'Elevation (km): {mean_elevation_km}')
+
 
     # get radiance file, wavelengths
     if args.wavelength_path:
@@ -223,31 +250,7 @@ def main(rawargs=None):
                               fwhm[:, np.newaxis]], axis=1)
     np.savetxt(paths.wavelength_path, wl_data, delimiter=' ')
 
-    mean_latitude, mean_longitude, mean_elevation_km, elevation_lut_grid = \
-        get_metadata_from_loc(paths.loc_working_path, lut_params)
-    if args.emulator_base is not None:
-        if elevation_lut_grid is not None and np.any(elevation_lut_grid < 0):
-            to_rem = elevation_lut_grid[elevation_lut_grid < 0].copy()
-            elevation_lut_grid[ elevation_lut_grid< 0] = 0
-            elevation_lut_grid = np.unique(elevation_lut_grid)
-            logging.info("Scene contains target lut grid elements < 0 km, and uses 6s (via sRTMnet).  6s does not "
-                         f"support targets below sea level in km units.  Setting grid points {to_rem} to 0.")
-
-    # Need a 180 - here, as this is already in MODTRAN convention
-    mean_altitude_km = mean_elevation_km + np.cos(np.deg2rad(180 - mean_to_sensor_zenith)) * mean_path_km
-
-    logging.info('Observation means:')
-    logging.info(f'Path (km): {mean_path_km}')
-    logging.info(f'To-sensor Zenith (deg): {mean_to_sensor_zenith}')
-    logging.info(f'To-sensor Azimuth (deg): {mean_to_sensor_azimuth}')
-    logging.info(f'Altitude (km): {mean_altitude_km}')
-
-    if args.emulator_base is not None and mean_altitude_km > 99:
-        logging.info('Adjusting altitude to 99 km for integration with 6S, because emulator is chosen.')
-        mean_altitude_km = 99
-
-
-    # We will use the model discrepancy with covariance OR uncorrelated 
+    # We will use the model discrepancy with covariance OR uncorrelated
     # Calibration error, but not both.
     if args.model_discrepancy_path is not None:
         uncorrelated_radiometric_uncertainty = 0
@@ -324,6 +327,7 @@ def main(rawargs=None):
 
     logging.info('Full (non-aerosol) LUTs:')
     logging.info(f'Elevation: {elevation_lut_grid}')
+    logging.info(f'Altitude: {altitude_lut_grid}')
     logging.info(f'To-sensor azimuth: {to_sensor_azimuth_lut_grid}')
     logging.info(f'To-sensor zenith: {to_sensor_zenith_lut_grid}')
     logging.info(f'H2O Vapor: {h2o_lut_grid}')
@@ -340,7 +344,7 @@ def main(rawargs=None):
 
         logging.info('Writing main configuration file.')
         build_main_config(paths, lut_params, h2o_lut_grid, elevation_lut_grid, to_sensor_azimuth_lut_grid,
-                          to_sensor_zenith_lut_grid, mean_latitude, mean_longitude, dt, 
+                          to_sensor_zenith_lut_grid, altitude_lut_grid, mean_latitude, mean_longitude, dt,
                           args.empirical_line == 1, args.n_cores, args.surface_category,
                           args.emulator_base, uncorrelated_radiometric_uncertainty, args.multiple_restarts,
                           args.segmentation_size)
@@ -577,6 +581,10 @@ class LUTConfig:
         # Units of kilometers
         self.elevation_spacing = 0.5
         self.elevation_spacing_min = 0.2
+
+        # Units of kilometers
+        self.altitude_spacing = 0.5
+        self.altitude_spacing_min = 0.2
 
         # Units of g / m2
         self.h2o_spacing = 0.25
@@ -872,15 +880,17 @@ def calc_modtran_max_water(paths: Pathnames) -> float:
     return max_water
 
 
-def get_metadata_from_obs(obs_file: str, lut_params: LUTConfig, trim_lines: int = 5,
-                          max_flight_duration_h: int = 8, nodata_value: float = -9999) -> \
-                          (List, bool, float, float, float, np.array, List, List):
+def get_metadata_from_obs_and_loc(obs_file: str, loc_file: str, lut_params: LUTConfig, trim_lines: int = 5,
+                                  max_flight_duration_h: int = 8, nodata_value: float = -9999) -> \
+                                  (List, bool, float, float, float, np.array, List, List):
     """ Get metadata needed for complete runs from the observation file
     (bands: path length, to-sensor azimuth, to-sensor zenith, to-sun azimuth,
-    to-sun zenith, phase, slope, aspect, cosine i, UTC time).
+    to-sun zenith, phase, slope, aspect, cosine i, UTC time) and the location file
+    (bands: lat, long, elev).
 
     Args:
         obs_file: file name to pull data from
+        loc_file: file name to pull data from
         lut_params: parameters to use to define lut grid
         trim_lines: number of lines to ignore at beginning and end of file (good if lines contain values that are
                     erroneous but not nodata
@@ -891,14 +901,19 @@ def get_metadata_from_obs(obs_file: str, lut_params: LUTConfig, trim_lines: int 
         tuple containing:
             h_m_s - list of the mean-time hour, minute, and second within the line
             increment_day - indicator of whether the UTC day has been changed since the beginning of the line time
-            mean_path_km - mean distance between sensor and ground in km for good data
             mean_to_sensor_azimuth - mean to-sensor-azimuth for good data
             mean_to_sensor_zenith_rad - mean to-sensor-zenith in radians for good data
-            valid - boolean array indicating which pixels were NOT nodata
             to_sensor_azimuth_lut_grid - the to-sensor azimuth angle look up table for good data
             to_sensor_zenith_lut_grid - the to-sensor zenith look up table for good data
+            mean_latitude - mean latitude of good values from the location file
+            mean_longitude - mean latitude of good values from the location file
+            mean_elevation_km - mean ground estimate of good values from the location file
+            mean_altitude_km - mean altitude of good values from the obs and location files
+            elevation_lut_grid - the elevation look up table, based on globals and values from location file
+            altitude_lut_grid - the altitude look up table, based on globals and values from location and obs file
     """
     obs_dataset = gdal.Open(obs_file, gdal.GA_ReadOnly)
+    loc_dataset = gdal.Open(loc_file, gdal.GA_ReadOnly)
 
     # Initialize values to populate
     valid = np.zeros((obs_dataset.RasterYSize, obs_dataset.RasterXSize), dtype=bool)
@@ -921,14 +936,16 @@ def get_metadata_from_obs(obs_file: str, lut_params: LUTConfig, trim_lines: int 
         to_sensor_zenith[line,:] = obs_line[2, ...]
         time[line,:] = obs_line[9, ...]
 
+    loc_data = np.zeros((loc_dataset.RasterCount, loc_dataset.RasterYSize, loc_dataset.RasterXSize))
+    for line in range(loc_dataset.RasterYSize):
+        # Read line in
+        loc_data[:, line:line + 1, :] = loc_dataset.ReadAsArray(0, line, loc_dataset.RasterXSize, 1)
+
     use_trim = trim_lines != 0 and valid.shape[0] > trim_lines*2
     if use_trim:
         actual_valid = valid.copy()
         valid[:trim_lines,:] = False
         valid[-trim_lines:,:] = False
-
-    mean_path_km = np.mean(path_km[valid])
-    del path_km
 
     mean_to_sensor_azimuth = lut_params.get_angular_grid(to_sensor_azimuth[valid], -1, 0) % 360
     mean_to_sensor_zenith = 180 - lut_params.get_angular_grid(to_sensor_zenith[valid], -1, 0)
@@ -943,7 +960,6 @@ def get_metadata_from_obs(obs_file: str, lut_params: LUTConfig, trim_lines: int 
         to_sensor_azimuth_lut_grid = np.sort(np.array([x % 360 for x in to_sensor_azimuth_lut_grid]))
 
     del to_sensor_azimuth
-    del to_sensor_zenith
 
     # Make time calculations
     mean_time = np.mean(time[valid])
@@ -968,11 +984,31 @@ def get_metadata_from_obs(obs_file: str, lut_params: LUTConfig, trim_lines: int 
     h_m_s.append(np.floor((mean_time - h_m_s[-1]) * 60))
     h_m_s.append(np.floor((mean_time - h_m_s[-2] - h_m_s[-1] / 60.) * 3600))
 
+    # Grab zensor position and orientation information
+    mean_latitude = lut_params.get_angular_grid(loc_data[1,valid].flatten(), -1, 0)
+    mean_longitude = lut_params.get_angular_grid(-1 * loc_data[0,valid].flatten(), -1, 0)
+
+    mean_elevation_km = np.mean(loc_data[2,valid]) / 1000.0
+
+    # make elevation grid
+    min_elev = np.min(loc_data[2, valid]) / 1000.
+    max_elev = np.max(loc_data[2, valid]) / 1000.
+    elevation_lut_grid = lut_params.get_grid(min_elev, max_elev, lut_params.elevation_spacing,
+                                             lut_params.elevation_spacing_min)
+
+    altitude_km = loc_data[2,valid] + np.cos(np.deg2rad(180 - to_sensor_zenith[valid])) * path_km[valid]
+    del to_sensor_zenith, path_km
+
+    altitude_lut_grid = lut_params.get_grid(np.min(altitude_km), np.max(altitude_km), lut_params.altitude_spacing,
+                                            lut_params.altitude_spacing_min)
+    mean_altitude_km = np.mean(altitude_km)
+
     if use_trim:
         valid = actual_valid
 
-    return h_m_s, increment_day, mean_path_km, mean_to_sensor_azimuth, mean_to_sensor_zenith, valid, \
-           to_sensor_azimuth_lut_grid, to_sensor_zenith_lut_grid
+    return h_m_s, increment_day, mean_to_sensor_azimuth, mean_to_sensor_zenith, to_sensor_azimuth_lut_grid, \
+           to_sensor_zenith_lut_grid, mean_latitude, mean_longitude, mean_elevation_km,  mean_altitude_km, \
+           elevation_lut_grid, altitude_lut_grid
 
 
 def get_metadata_from_loc(loc_file: str, lut_params: LUTConfig, trim_lines: int = 5, nodata_value: float = -9999) -> \
@@ -1134,8 +1170,6 @@ def build_presolve_config(paths: Pathnames, h2o_lut_grid: np.array, n_cores: int
         isofit_config_h2o['input']['loc_file'] = paths.loc_working_path
         isofit_config_h2o['input']['obs_file'] = paths.obs_working_path
 
-
-
     # write modtran_template
     with open(paths.h2o_config_path, 'w') as fout:
         fout.write(json.dumps(isofit_config_h2o, cls=SerialEncoder, indent=4, sort_keys=True))
@@ -1143,9 +1177,9 @@ def build_presolve_config(paths: Pathnames, h2o_lut_grid: np.array, n_cores: int
 
 def build_main_config(paths: Pathnames, lut_params: LUTConfig, h2o_lut_grid: np.array = None,
                       elevation_lut_grid: np.array = None, to_sensor_azimuth_lut_grid: np.array = None,
-                      to_sensor_zenith_lut_grid: np.array = None, mean_latitude: float = None,
-                      mean_longitude: float = None, dt: datetime = None, use_emp_line: bool = True, 
-                      n_cores: int = -1, surface_category='multicomponent_surface',
+                      to_sensor_zenith_lut_grid: np.array = None, altitude_lut_grid: np.array = None,
+                      mean_latitude: float = None, mean_longitude: float = None, dt: datetime = None,
+                      use_emp_line: bool = True, n_cores: int = -1, surface_category='multicomponent_surface',
                       emulator_base: str = None, uncorrelated_radiometric_uncertainty: float = 0.0,
                       multiple_restarts: bool = False, segmentation_size=400):
     """ Write an isofit config file for the main solve, using the specified pathnames and all given info
@@ -1157,6 +1191,7 @@ def build_main_config(paths: Pathnames, lut_params: LUTConfig, h2o_lut_grid: np.
         elevation_lut_grid: the ground elevation look up table grid isofit should use for this solve
         to_sensor_azimuth_lut_grid: the to-sensor azimuth angle look up table grid isofit should use for this solve
         to_sensor_zenith_lut_grid: the to-sensor zenith angle look up table grid isofit should use for this solve
+        altitude_lut_grid: the altitude look up table grid isofit should use for this solve
         mean_latitude: the latitude isofit should use for this solve
         mean_longitude: the longitude isofit should use for this solve
         dt: the datetime object corresponding to this flightline to use for this solve
@@ -1227,11 +1262,12 @@ def build_main_config(paths: Pathnames, lut_params: LUTConfig, h2o_lut_grid: np.
         radiative_transfer_config['lut_grid']['TRUEAZ'] = to_sensor_azimuth_lut_grid.tolist()
     if to_sensor_zenith_lut_grid is not None:
         radiative_transfer_config['lut_grid']['OBSZEN'] = to_sensor_zenith_lut_grid.tolist() # modtran convension
+    if to_sensor_zenith_lut_grid is not None:
+        radiative_transfer_config['lut_grid']['H1ALT'] = altitude_lut_grid.tolist()
 
     # add aerosol elements from climatology
-    aerosol_state_vector, aerosol_lut_grid, aerosol_model_path = \
-        load_climatology(paths.aerosol_climatology, mean_latitude, mean_longitude, dt,
-                         paths.isofit_path, lut_params=lut_params)
+    aerosol_state_vector, aerosol_lut_grid, aerosol_model_path = load_climatology(paths.aerosol_climatology,
+        mean_latitude, mean_longitude, dt, paths.isofit_path, lut_params=lut_params)
     radiative_transfer_config['statevector'].update(aerosol_state_vector)
     radiative_transfer_config['lut_grid'].update(aerosol_lut_grid)
     radiative_transfer_config['radiative_transfer_engines']['vswir']['aerosol_model_file'] = aerosol_model_path

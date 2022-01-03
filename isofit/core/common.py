@@ -239,18 +239,22 @@ class VectorInterpolator:
 
         self.n = data.shape[-1]
         grid_aug = grid + [np.arange(data.shape[-1])]
-        #self.grid = tuple([np.array(x) for x in grid])
-        self.grid = np.stack(np.meshgrid(*grid, indexing='ij'),axis=-1)
-        self.data = data
 
-        self.grid = np.reshape(self.grid, (int(np.product(self.grid.shape)/self.grid.shape[-1]), self.grid.shape[-1]))
-        self.data = np.reshape(self.data, (int(np.product(self.data.shape)/self.data.shape[-1]), self.data.shape[-1]))
+        if len(grid_aug) > 2:
+            #self.grid = tuple([np.array(x) for x in grid])
+            self.grid = np.stack(np.meshgrid(*grid, indexing='ij'),axis=-1)
+            self.data = data
 
-        self.itp = LinearNDInterpolator(self.grid, self.data, rescale=False)
-        #self.itp = CloughTocher2DInterpolator(self.grid, self.data)
+            self.grid = np.reshape(self.grid, (int(np.product(self.grid.shape)/self.grid.shape[-1]), self.grid.shape[-1]))
+            self.data = np.reshape(self.data, (int(np.product(self.data.shape)/self.data.shape[-1]), self.data.shape[-1]))
 
-        #self.itp = RegularGridInterpolator(grid_aug, data,
-        #                                   bounds_error=False, fill_value=None)
+            self.itp = LinearNDInterpolator(self.grid, self.data, rescale=False)
+            #self.itp = CloughTocher2DInterpolator(self.grid, self.data)
+            self.regular_grid = False
+        else:
+            self.itp = RegularGridInterpolator(grid_aug, data,
+                                               bounds_error=False, fill_value=None)
+            self.regular_grid = True
 
     def __call__(self, points):
 
@@ -259,25 +263,41 @@ class VectorInterpolator:
         if self.single_point_data is not None:
             return self.single_point_data
 
-        x = np.zeros((len(points) +
+        if self.regular_grid:
+            x = np.zeros((self.n, len(points) + 1 +
                       np.sum(self.lut_interp_types != 'n')))
-        offset_count = 0
-        for i in range(len(points)):
-            if self.lut_interp_types[i] == 'n':
-                x[i + offset_count] = points[i]
-            elif self.lut_interp_types[i] == 'r':
-                x[i + offset_count] = np.cos(points[i])
-                x[i + 1 + offset_count] = np.sin(points[i])
-                offset_count += 1
-            elif self.lut_interp_types[i] == 'd':
-                x[i + offset_count] = np.cos(points[i] / 180. * np.pi)
-                x[i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
-                offset_count += 1
+            offset_count = 0
+            for i in range(len(points)):
+                if self.lut_interp_types[i] == 'n':
+                    x[:, i + offset_count] = points[i]
+                elif self.lut_interp_types[i] == 'r':
+                    x[:, i + offset_count] = np.cos(points[i])
+                    x[:, i + 1 + offset_count] = np.sin(points[i])
+                    offset_count += 1
+                elif self.lut_interp_types[i] == 'd':
+                    x[:, i + offset_count] = np.cos(points[i] / 180. * np.pi)
+                    x[:, i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
+                    offset_count += 1
 
-        #import ipdb; ipdb.set_trace()
-        #res = griddata(self.grid, self.data, x, method='linear')
-        #res = griddata(self.grid, self.data, x, method='cubic', rescale=False)
-        res = self.itp(x)
+            x[:, -1] = np.arange(self.n)
+            res = self.itp(x)
+        else:
+            x = np.zeros((len(points) +
+                          np.sum(self.lut_interp_types != 'n')))
+            offset_count = 0
+            for i in range(len(points)):
+                if self.lut_interp_types[i] == 'n':
+                    x[i + offset_count] = points[i]
+                elif self.lut_interp_types[i] == 'r':
+                    x[i + offset_count] = np.cos(points[i])
+                    x[i + 1 + offset_count] = np.sin(points[i])
+                    offset_count += 1
+                elif self.lut_interp_types[i] == 'd':
+                    x[i + offset_count] = np.cos(points[i] / 180. * np.pi)
+                    x[i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
+                    offset_count += 1
+
+            res = self.itp(x)
 
         return res
 

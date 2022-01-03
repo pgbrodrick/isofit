@@ -996,7 +996,7 @@ def get_metadata_from_obs_and_loc(obs_file: str, loc_file: str, lut_params: LUTC
     elevation_lut_grid = lut_params.get_grid(min_elev, max_elev, lut_params.elevation_spacing,
                                              lut_params.elevation_spacing_min)
 
-    altitude_km = loc_data[2,valid] + np.cos(np.deg2rad(180 - to_sensor_zenith[valid])) * path_km[valid]
+    altitude_km = loc_data[2,valid] / 1000. + np.cos(np.deg2rad(180 - to_sensor_zenith[valid])) * path_km[valid]
     del to_sensor_zenith, path_km
 
     altitude_lut_grid = lut_params.get_grid(np.min(altitude_km), np.max(altitude_km), lut_params.altitude_spacing,

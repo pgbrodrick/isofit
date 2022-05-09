@@ -21,10 +21,10 @@
 import numpy as np
 from spectral.io import envi
 import ray
-import ray.services
 import logging
 import atexit
 from isofit.core.fileio import write_bil_chunk
+from isofit.core.common import envi_header
 
 @ray.remote
 def extract_chunk(lstart: int, lend: int, in_file: str, labels: np.array, flag: float, logfile=None, loglevel='INFO'):
@@ -48,7 +48,7 @@ def extract_chunk(lstart: int, lend: int, in_file: str, labels: np.array, flag: 
     logging.basicConfig(format='%(levelname)s:%(message)s', level=loglevel, filename=logfile)
     logging.info(f'{lstart}: starting')
 
-    in_img = envi.open(in_file + '.hdr')
+    in_img = envi.open(envi_header(in_file))
     img_mm = in_img.open_memmap(interleave='bip', writable=False)
 
     # Which labels will we extract? ignore zero index
@@ -118,13 +118,13 @@ def extractions(inputfile, labels, output, chunksize, flag, n_cores: int = 1, ra
     }
 
     # Open input data, get dimensions
-    in_img = envi.open(in_file+'.hdr', in_file)
+    in_img = envi.open(envi_header(in_file), in_file)
     meta = in_img.metadata
 
     nl, nb, ns = [int(meta[n]) for n in ('lines', 'bands', 'samples')]
     img_mm = in_img.open_memmap(interleave='bip', writable=False)
 
-    lbl_img = envi.open(lbl_file+'.hdr', lbl_file)
+    lbl_img = envi.open(envi_header(lbl_file), lbl_file)
     labels = lbl_img.read_band(0)
     un_labels = np.unique(labels).tolist()
     if 0 not in un_labels:
@@ -135,12 +135,8 @@ def extractions(inputfile, labels, output, chunksize, flag, n_cores: int = 1, ra
     rayargs = {'ignore_reinit_error': True,
                'local_mode': n_cores == 1,
                "address": ray_address,
-               "_redis_password": ray_redis_password}
-
-    if rayargs['local_mode']:
-        rayargs['_temp_dir'] = ray_temp_dir
-        # Used to run on a VPN
-        ray.services.get_node_ip_address = lambda: '127.0.0.1'
+               '_temp_dir': ray_temp_dir,
+                '_redis_password': ray_redis_password}
 
     # We can only set the num_cpus if running on a single-node
     if ray_ip_head is None and ray_redis_password is None:
@@ -171,7 +167,7 @@ def extractions(inputfile, labels, output, chunksize, flag, n_cores: int = 1, ra
     meta["samples"] = '1'
     meta["interleave"] = "bil"
 
-    out_img = envi.create_image(out_file+'.hdr',  metadata=meta, ext='', force=True)
+    out_img = envi.create_image(envi_header(out_file),  metadata=meta, ext='', force=True)
     del out_img
     if dtm[meta['data type']] == np.float32:
         type = 'float32'

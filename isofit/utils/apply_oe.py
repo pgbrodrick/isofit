@@ -20,6 +20,7 @@ from typing import List
 
 from isofit.utils import segment, extractions, empirical_line
 from isofit.core import isofit, common
+from isofit.core.common import envi_header
 
 EPS = 1e-6
 CHUNKSIZE = 256
@@ -200,7 +201,7 @@ def main(rawargs=None):
     if args.wavelength_path:
         chn, wl, fwhm = np.loadtxt(args.wavelength_path).T
     else:
-        radiance_dataset = envi.open(paths.radiance_working_path + '.hdr')
+        radiance_dataset = envi.open(envi_header(paths.radiance_working_path))
         wl = np.array([float(w) for w in radiance_dataset.metadata['wavelength']])
         if 'fwhm' in radiance_dataset.metadata:
             fwhm = np.array([float(f) for f in radiance_dataset.metadata['fwhm']])
@@ -231,6 +232,10 @@ def main(rawargs=None):
             elevation_lut_grid = np.unique(elevation_lut_grid)
             logging.info("Scene contains target lut grid elements < 0 km, and uses 6s (via sRTMnet).  6s does not "
                          f"support targets below sea level in km units.  Setting grid points {to_rem} to 0.")
+        if mean_elevation_km < 0:
+            mean_elevation_km = 0
+            logging.info("Scene contains a mean target elevation < 0.  6s does not "
+                         f"support targets below sea level in km units.  Setting mean elevation to 0.")
 
     # Need a 180 - here, as this is already in MODTRAN convention
     mean_altitude_km = mean_elevation_km + np.cos(np.deg2rad(180 - mean_to_sensor_zenith)) * mean_path_km
@@ -240,6 +245,11 @@ def main(rawargs=None):
     logging.info(f'To-sensor Zenith (deg): {mean_to_sensor_zenith}')
     logging.info(f'To-sensor Azimuth (deg): {mean_to_sensor_azimuth}')
     logging.info(f'Altitude (km): {mean_altitude_km}')
+
+    if args.emulator_base is not None and mean_altitude_km > 99:
+        logging.info('Adjusting altitude to 99 km for integration with 6S, because emulator is chosen.')
+        mean_altitude_km = 99
+
 
     # We will use the model discrepancy with covariance OR uncorrelated 
     # Calibration error, but not both.
@@ -281,7 +291,7 @@ def main(rawargs=None):
             max_water = 6
 
         # run H2O grid as necessary
-        if not exists(paths.h2o_subs_path + '.hdr') or not exists(paths.h2o_subs_path):
+        if not exists(envi_header(paths.h2o_subs_path)) or not exists(paths.h2o_subs_path):
             # Write the presolve connfiguration file
             h2o_grid = np.linspace(0.01, max_water - 0.01, 10).round(2)
             logging.info(f'Pre-solve H2O grid: {h2o_grid}')
@@ -304,7 +314,7 @@ def main(rawargs=None):
         else:
             logging.info('Existing h2o-presolve solutions found, using those.')
 
-        h2o = envi.open(paths.h2o_subs_path + '.hdr')
+        h2o = envi.open(envi_header(paths.h2o_subs_path))
         h2o_est = h2o.read_band(-1)[:].flatten()
 
         p05 = np.percentile(h2o_est[h2o_est > lut_params.h2o_min], 5)
@@ -533,7 +543,7 @@ class Pathnames():
                 logging.info('Staging %s to %s' % (src, dst))
                 copyfile(src, dst)
                 if hasheader:
-                    copyfile(src + '.hdr', dst + '.hdr')
+                    copyfile(envi_header(src), envi_header(dst))
 
 
 class SerialEncoder(json.JSONEncoder):
@@ -1395,7 +1405,6 @@ def write_modtran_template(atmosphere_type: str, fid: str, altitude_km: float, d
     # write modtran_template
     with open(output_file, 'w') as fout:
         fout.write(json.dumps(h2o_template, cls=SerialEncoder, indent=4, sort_keys=True))
-
 
 if __name__ == "__main__":
     main()

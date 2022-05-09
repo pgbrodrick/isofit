@@ -18,6 +18,7 @@
 # Author: David R Thompson, david.r.thompson@jpl.nasa.gov
 #
 
+from argparse import ArgumentError
 import os
 import json
 import xxhash
@@ -27,6 +28,7 @@ from scipy.interpolate import RegularGridInterpolator
 from os.path import expandvars, split, abspath
 from typing import List
 from collections import OrderedDict
+import ndsplines
 
 
 ### Variables ###
@@ -46,9 +48,10 @@ class VectorInterpolator:
             data_input: n dimensional array of radiative transfer engine outputs (each dimension size corresponds to the
                         given grid_input list length, with the last dimensions equal to the number of sensor channels)
             lut_interp_types: a list indicating if each dimension is in radiance (r), degrees (r), or normal (n) units.
+            version: version to use: 'rg' for scipy RegularGridInterpolator, 'nds-k' for ndsplines, where k is the degrees
         """
 
-    def __init__(self, grid_input: List[List[float]], data_input: np.array, lut_interp_types: List[str]):
+    def __init__(self, grid_input: List[List[float]], data_input: np.array, lut_interp_types: List[str], version='nds-1'):
         self.lut_interp_types = lut_interp_types
         self.single_point_data = None
 
@@ -61,8 +64,8 @@ class VectorInterpolator:
             self.single_point_data = data
 
         # expand grid dimensionality as needed
-        [radian_locations] = np.where(self.lut_interp_types == 'd')
-        [degree_locations] = np.where(self.lut_interp_types == 'r')
+        [radian_locations] = np.where(self.lut_interp_types == 'r')
+        [degree_locations] = np.where(self.lut_interp_types == 'd')
         angle_locations = np.hstack([radian_locations, degree_locations])
         angle_types = np.hstack(
             [self.lut_interp_types[radian_locations],
@@ -78,8 +81,8 @@ class VectorInterpolator:
                 grid_subset_cosin = np.cos(original_grid_subset)
                 grid_subset_sin = np.sin(original_grid_subset)
             elif (angle_types[_angle_loc] == 'd'):
-                grid_subset_cosin = np.cos(original_grid_subset / 180. * np.pi)
-                grid_subset_sin = np.sin(original_grid_subset / 180. * np.pi)
+                grid_subset_cosin = np.cos(np.deg2rad(original_grid_subset))
+                grid_subset_sin = np.sin(np.deg2rad(original_grid_subset))
 
             # handle the fact that the grid may no longer be in order
             grid_subset_cosin_order = np.argsort(grid_subset_cosin)
@@ -120,9 +123,18 @@ class VectorInterpolator:
             angle_locations += 1
 
         self.n = data.shape[-1]
-        grid_aug = grid + [np.arange(data.shape[-1])]
-        self.itp = RegularGridInterpolator(grid_aug, data,
-                                           bounds_error=False, fill_value=None)
+        if version == 'rg':
+            grid_aug = grid + [np.arange(data.shape[-1])]
+            self.itp = RegularGridInterpolator(grid_aug, data,
+                                               bounds_error=False, fill_value=None)
+        elif version[:3] == 'nds':
+            degrees = int(version[4:])
+            grid_aug = grid + [np.arange(data.shape[-1]).tolist()]
+            grid_arr = np.stack(np.meshgrid(*grid_aug, indexing='ij'),axis=-1)
+            self.itp = ndsplines.make_interp_spline(grid_arr, data, degrees=degrees)
+        else:
+            raise_str = f'Unknown interpoloator version {version}'
+            raise ArgumentError(raise_str)
 
     def __call__(self, points):
 
@@ -142,8 +154,8 @@ class VectorInterpolator:
                 x[:, i + 1 + offset_count] = np.sin(points[i])
                 offset_count += 1
             elif self.lut_interp_types[i] == 'd':
-                x[:, i + offset_count] = np.cos(points[i] / 180. * np.pi)
-                x[:, i + 1 + offset_count] = np.sin(points[i] / 180. * np.pi)
+                x[:, i + offset_count] = np.cos(np.deg2rad(points[i]))
+                x[:, i + 1 + offset_count] = np.sin(np.deg2rad(points[i]))
                 offset_count += 1
 
         # This last dimension is always an integer so no
@@ -517,8 +529,6 @@ def spectral_response_function(response_range: np.array, mu: float, sigma: float
     return srf
 
 
-
-
 def combos(inds: List[List[float]]) -> np.array:
     """Return all combinations of indices in a list of index sublists.
     For example, the call::
@@ -570,3 +580,25 @@ def conditional_gaussian(mu: np.array, C: np.array, window: np.array, remain: np
     conditional_cov = C22 - C21 @ Cinv @ C12
     return conditional_mean, conditional_cov
 
+def envi_header(inputpath):
+    """
+    Convert a envi binary/header path to a header, handling extensions
+    Args:
+        inputpath: path to envi binary file
+    Returns:
+        str: the header file associated with the input reference.
+
+    """
+    if os.path.splitext(inputpath)[-1] == '.img' or os.path.splitext(inputpath)[-1] == '.dat' or os.path.splitext(inputpath)[-1] == '.raw':
+        # headers could be at either filename.img.hdr or filename.hdr.  Check both, return the one that exists if it
+        # does, if not return the latter (new file creation presumed).
+        hdrfile = os.path.splitext(inputpath)[0] + '.hdr'
+        if os.path.isfile(hdrfile):
+            return hdrfile
+        elif os.path.isfile(inputpath + '.hdr'):
+            return inputpath + '.hdr'
+        return hdrfile
+    elif os.path.splitext(inputpath)[-1] == '.hdr':
+        return inputpath
+    else:
+        return inputpath + '.hdr'

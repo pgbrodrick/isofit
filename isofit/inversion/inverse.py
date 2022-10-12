@@ -266,6 +266,45 @@ class Inversion:
 
         return np.real(total_resid), x
 
+
+    def invert_analytical(self, meas, geom, x0, num_iter=1):
+        """ Perform an analytical estimate of the conditional MAP estimate for
+        a fixed atmosphere.  Baed on Susiluoto, 2022.
+
+        Args:
+            meas: a one-D numpy vector of radiance in uW/nm/sr/cm2
+            geom: a geometry object
+            x0: the initial guess - warning, atmosphere will not updates
+            num_iter: number of interations to run through
+
+        Returns:
+            x: MAP estimate of the mean
+            S: conditional posterior covariance estimate
+        """
+        x = x0
+        x_surface, x_RT, x_instrument = self.fm.unpack(x)
+        S = None
+
+        for n in range(num_iter):
+            L_atm = self.fm.RT.get_L_atm(x_RT, geom)
+            L = self.fm.RT.calc_rdn(x, geom)
+
+            # Match Jouni's convention
+            L_surf = np.eye(len(L)) * (L - L_atm)
+            r = np.eye(len(L_atm)) * r
+
+            # Seps = Tau in Jouni's formulation
+            Seps_inv, Seps_inv_sqrt = self.calc_Seps(x, meas, geom)
+            Sa_inv = svd_inv(self.fm.Sa(x, geom))
+
+            S = svd_inv(Seps_inv + Sa_inv)
+            mu = S @ (Seps_inv @ svd_inv(L_surf) @ (meas - r) + Sa_inv @ self.fm.xa(x, geom))
+
+            x[self.fm.idx_surface] = mu
+
+        return x, S
+
+
     def invert(self, meas, geom):
         """Inverts a meaurement and returns a state vector.
         Args:

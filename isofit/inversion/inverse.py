@@ -46,6 +46,7 @@ class Inversion:
         measurement cost distributions."""
 
         config: InversionConfig = full_config.implementation.inversion
+        self.config = config
 
         self.lasttime = time.time()
         self.fm = forward
@@ -285,6 +286,7 @@ class Inversion:
         x_surface, x_RT, x_instrument = self.fm.unpack(x)
         S = None
 
+        trajectory = [x]
         for n in range(num_iter):
             L_atm = self.fm.RT.get_L_atm(x_RT, geom)
             L = self.fm.RT.calc_rdn(x, geom)
@@ -301,8 +303,9 @@ class Inversion:
             mu = S @ (Seps_inv @ svd_inv(L_surf) @ (meas - r) + Sa_inv @ self.fm.xa(x, geom))
 
             x[self.fm.idx_surface] = mu
+            trajectory.append(x)
 
-        return x, S
+        return trajectory
 
 
     def invert(self, meas, geom):
@@ -321,6 +324,8 @@ class Inversion:
         if self.mode == 'simulation':
             self.fm.surface.rfl = meas
             return np.array([self.fm.init.copy()])
+        elif self.mode == 'aoe':
+            return np.array(self.invert_analytical(meas, geom, x0, self.config.aoe_iterations))
 
         if len(self.integration_grid.values()) == 0:
             combo_values = [None]

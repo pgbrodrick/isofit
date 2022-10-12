@@ -186,11 +186,10 @@ class Worker(object):
         logging.basicConfig(format='%(levelname)s:%(asctime)s ||| %(message)s', level=loglevel, filename=logfile, datefmt='%Y-%m-%d,%H:%M:%S')
         self.config = config
         self.fm = forward_model
-        #self.fm = ForwardModel(self.config)
 
         if self.config.implementation.mode == 'mcmc_inversion':
             self.iv = MCMCInversion(self.config, self.fm)
-        elif self.config.implementation.mode in ['inversion', 'simulation']:
+        elif self.config.implementation.mode in ['inversion', 'simulation', 'aoe']:
             self.iv = Inversion(self.config, self.fm)
         else:
             # This should never be reached due to configuration checking

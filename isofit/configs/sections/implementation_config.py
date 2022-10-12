@@ -101,7 +101,7 @@ class ImplementationConfig(BaseConfigSection):
     def _check_config_validity(self) -> List[str]:
         errors = list()
 
-        valid_implementation_modes = ['inversion', 'mcmc_inversion', 'simulation']
+        valid_implementation_modes = ['inversion', 'mcmc_inversion', 'simulation', 'aoe']
         if self.mode not in valid_implementation_modes:
             errors.append('Invalid implementation mode: {}.  Valid options are: {}'.
                           format(self.mode, valid_implementation_modes))

@@ -41,6 +41,10 @@ class InversionConfig(BaseConfigSection):
         self.mcmc = McmcConfig({})
         """MCMC parameters, only used if mode = mcmc."""
 
+        self._aoe_iterations_type = int
+        self.aoe_iterations = None
+        """int: Number of AOE iterations to perform (if mode == aoe)."""
+
         self._integration_grid_type = OrderedDict
         self.integration_grid = OrderedDict({})
         """Grid of inversion points to execute if mode='grid'.  Either fixed, or starting points, depending

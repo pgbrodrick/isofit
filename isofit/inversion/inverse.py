@@ -324,8 +324,6 @@ class Inversion:
         if self.mode == 'simulation':
             self.fm.surface.rfl = meas
             return np.array([self.fm.init.copy()])
-        elif self.mode == 'aoe':
-            return np.array(self.invert_analytical(meas, geom, x0, self.config.aoe_iterations))
 
         if len(self.integration_grid.values()) == 0:
             combo_values = [None]

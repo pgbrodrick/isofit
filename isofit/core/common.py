@@ -259,23 +259,24 @@ def svd_inv_sqrt(C: np.array, hashtable: OrderedDict = None, max_hash_size: int 
             return hashtable[h]
 
     diagonal_bin = np.sum(C - np.diag(np.diagonal(C)),axis=1) == 0
-    diagonal = np.where(diagonal_bin)
+    diagonal = np.where(diagonal_bin)[0]
     Cinv = np.zeros_like(C)
+    Cinv_sqrt = np.zeros_like(C)
 
     if len(diagonal) > 0:
-        Cinv[diagonal,diagonal] = 1. / np.diag(C[diagonal,diagonal])
+        Cinv[diagonal,diagonal] = 1. / C[diagonal,diagonal]
+        Cinv_sqrt[diagonal,diagonal] = np.sqrt(Cinv[diagonal,diagonal])
 
-    if len(non_diagonal) < C.shape[0]:
+    if len(diagonal) < C.shape[0]:
 
         non_diagonal_idx = np.where(diagonal_bin == False)
         non_diagonal = np.meshgrid(non_diagonal_idx, non_diagonal_idx, indexing='ij')
 
-        D, P = scipy.linalg.eigh(C[non_diagonal_idx[0], non_diagonal_idx[1]])
+        D, P = scipy.linalg.eigh(C[non_diagonal[0], non_diagonal[1]])
         for count in range(3):
             if np.any(D < 0) or np.any(np.isnan(D)):
                 inv_eps = 1e-6 * (count-1)*10
-                D, P = scipy.linalg.eigh(
-                    C[non_diagonal_idx[0], non_diagonal_idx[1]] + np.diag(np.ones(len(non_diagonal_idx)) * inv_eps))
+                D, P = scipy.linalg.eigh(C[non_diagonal[0], non_diagonal[1]] + np.diag(np.ones(len(non_diagonal_idx)) * inv_eps))
             else:
                 break
 
@@ -285,10 +286,10 @@ def svd_inv_sqrt(C: np.array, hashtable: OrderedDict = None, max_hash_size: int 
 
         Ds = np.diag(1/np.sqrt(D))
         L = P@Ds
-        #Cinv_sqrt = L@P.T
         Cinv[non_diagonal[0], non_diagonal[1]] = L@L.T
+        Cinv_sqrt[non_diagonal[0], non_diagonal[1]] = L@P.T
 
-    Cinv_sqrt = np.sqrt(Cinv, where=Cinv!=0)
+    #Cinv_sqrt = np.sqrt(Cinv, where=Cinv!=0)
 
     # If there is a hash table, cache our solution.  Bound the total cache
     # size by removing any extra items in FIFO order.

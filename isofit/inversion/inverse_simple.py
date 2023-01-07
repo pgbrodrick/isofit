@@ -401,7 +401,9 @@ def invert_liquid_water(rfl_meas: np.array,
                         l_shoulder: float = 850,
                         r_shoulder: float = 1100,
                         lw_init: tuple = (0.02, 0.3, 0.0002),
-                        lw_bounds: tuple = ([0, 0.5], [0, 1.0], [-0.0004, 0.0004])):
+                        lw_bounds: tuple = ([0, 0.5], [0, 1.0], [-0.0004, 0.0004]),
+                        abs_co_w: np.array = None,
+                        return_abs_co: bool = False):
     """Given a reflectance estimate, fit a state vector including liquid water path length
     based on a simple Beer-Lambert surface model.
 
@@ -412,6 +414,8 @@ def invert_liquid_water(rfl_meas: np.array,
         r_shoulder: wavelength of right absorption feature shoulder
         lw_init:    initial guess for liquid water path length, intercept, and slope
         lw_bounds:  lower and upper bounds for liquid water path length, intercept, and slope
+        abs_co_w:   pre-loaded absorption coefficients - loaded if not provided
+        return_abs_co:   flag to indicate whether or not to return the absorption coefficients
 
     Returns:
         solution: estimated liquid water path length, intercept, and slope based on a given surface reflectance
@@ -424,13 +428,14 @@ def invert_liquid_water(rfl_meas: np.array,
 
     # load imaginary part of liquid water refractive index and calculate wavelength dependent absorption coefficient
     # __file__ should live at isofit/isofit/inversion/
-    isofit_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    path_k = os.path.join(isofit_path, "data", "iop", "k_liquid_water_ice.xlsx")
+    if abs_co_w is None:
+        isofit_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        path_k = os.path.join(isofit_path, "data", "iop", "k_liquid_water_ice.xlsx")
 
-    k_wi = pd.read_excel(io=path_k, sheet_name='Sheet1', engine='openpyxl')
-    wl_water, k_water = get_refractive_index(k_wi=k_wi, a=0, b=982, col_wvl="wvl_6", col_k="T = 20°C")
-    kw = np.interp(x=wl_sel, xp=wl_water, fp=k_water)
-    abs_co_w = 4 * np.pi * kw / wl_sel
+        k_wi = pd.read_excel(io=path_k, sheet_name='Sheet1', engine='openpyxl')
+        wl_water, k_water = get_refractive_index(k_wi=k_wi, a=0, b=982, col_wvl="wvl_6", col_k="T = 20°C")
+        kw = np.interp(x=wl_sel, xp=wl_water, fp=k_water)
+        abs_co_w = 4 * np.pi * kw / wl_sel
 
     rfl_meas_sel = rfl_meas[lw_feature_left:lw_feature_right + 1]
 
@@ -447,7 +452,10 @@ def invert_liquid_water(rfl_meas: np.array,
 
     solution = x_opt.x
 
-    return solution
+    if return_abs_co:
+        return solution, abs_co_w
+    else:
+        return solution
 
 
 def beer_lambert_model(x, y, wl, alpha_lw):

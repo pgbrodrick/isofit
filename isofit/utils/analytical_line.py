@@ -270,8 +270,10 @@ class Worker(object):
             self.radiance_correction = None
 
     def run_lines(self, startstop: tuple) -> None:
-        """
-        TODO: Description
+        """Run the analytical inversion on a subset of lines.
+
+        Args:
+            startstop (tuple): tuple of start line, end line
         """
         rdn = envi.open(envi_header(self.rdn_file)).open_memmap(interleave="bip")
         loc = envi.open(envi_header(self.loc_file)).open_memmap(interleave="bip")
@@ -295,13 +297,15 @@ class Worker(object):
         )
 
         for r in range(start_line, stop_line):
+            rdn_line = rdn[start_line, ...].copy()
+            rt_state_line = rt_state[start_line, ...].copy()
             for c in range(output_state.shape[1]):
-                meas = rdn[r, c, :]
+                meas = rdn_line[c, :]
                 if self.radiance_correction is not None:
                     meas *= self.radiance_correction
                 if np.all(meas < 0):
                     continue
-                x_RT = rt_state[r, c, self.fm.idx_RT - len(self.fm.idx_surface)]
+                x_RT = rt_state_line[c, self.fm.idx_RT - len(self.fm.idx_surface)]
                 geom = Geometry(obs=obs[r, c, :], loc=loc[r, c, :])
 
                 states, unc = invert_analytical(

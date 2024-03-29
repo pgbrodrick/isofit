@@ -297,6 +297,7 @@ class Worker(object):
         )
 
         for r in range(start_line, stop_line):
+            start_time = time.time()
             rdn_line = rdn[start_line, ...].copy()
             rt_state_line = rt_state[start_line, ...].copy()
             for c in range(output_state.shape[1]):
@@ -323,8 +324,6 @@ class Worker(object):
 
                 output_state_unc[r - start_line, c, :] = unc[self.fm.idx_surface]
 
-            logging.info(f"Analytical line writing line {r}")
-
             write_bil_chunk(
                 output_state[r - start_line, ...].T,
                 self.analytical_state_file,
@@ -336,6 +335,9 @@ class Worker(object):
                 self.analytical_state_unc_file,
                 r,
                 (rdn.shape[0], rdn.shape[1], len(self.fm.idx_surface)),
+            )
+            logging.info(
+                f"Analytical line writing line {r}: {np.round(time.time() - start_time)}"
             )
 
 

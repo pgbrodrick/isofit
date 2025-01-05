@@ -541,7 +541,7 @@ class ModtranRT(RadiativeTransferEngine):
             elif key in ["CH4"]:
                 # MODTRAN cannot accept a ground altitude above 6 km, so keep all layers after that
                 gndalt = param[0]["MODTRANINPUT"]["SURFACE"]["GNDALT"]
-                altitudes = self.get_profile_alt(gndalt)
+                altitudes = [gndalt] + self.get_profile_alt(gndalt + 0.5)
 
                 altitude_dict = {
                     "TYPE": "PROF_ALTITUDE",
@@ -549,8 +549,9 @@ class ModtranRT(RadiativeTransferEngine):
                     "PROFILE": altitudes,
                 }
 
+                bg_ch4_rate = 1.85  # parameterize somehow - this is 18500 ppm
                 ch4s = np.linspace(1.85, 0.03264, len(altitudes) - 2)
-                ch4s = [val, val] + ch4s.tolist()
+                ch4s = [val * 2 + bg_ch4_rate, val * 2 + bg_ch4_rate] + ch4s.tolist()
                 ch4_dict = {
                     "TYPE": "PROF_CH4",
                     "UNITS": "UNT_DPPMV",

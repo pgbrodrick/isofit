@@ -355,6 +355,10 @@ class LUTConfig:
         self.aerosol_2_spacing = 0.1
         self.aerosol_2_spacing_min = 0
 
+        self.ch4_spacing = 0
+        self.ch4_spacing_min = 0
+        self.ch4_range = [0, 120]
+
         # Units of AOD
         self.aerosol_0_range = [0.001, 1]
         self.aerosol_1_range = [0.001, 1]
@@ -676,6 +680,7 @@ def build_main_config(
     to_sensor_zenith_lut_grid: np.array = None,
     to_sun_zenith_lut_grid: np.array = None,
     relative_azimuth_lut_grid: np.array = None,
+    ch4_lut_grid: np.array = None,
     mean_latitude: float = None,
     mean_longitude: float = None,
     dt: datetime = None,
@@ -704,6 +709,7 @@ def build_main_config(
                                               solve
         relative_azimuth_lut_grid:            the relative to-sun azimuth angle look up table grid isofit should use for
                                               this solve
+        ch4_lut_grid:                         the methane look up table grid isofit should use for this solve
         mean_latitude:                        the latitude isofit should use for this solve
         mean_longitude:                       the longitude isofit should use for this solve
         dt:                                   the datetime object corresponding to this flightline to use for this solve
@@ -824,6 +830,8 @@ def build_main_config(
             radiative_transfer_config["lut_grid"][
                 "relative_azimuth"
             ] = relative_azimuth_lut_grid.tolist()
+        if ch4_lut_grid is not None and len(ch4_lut_grid) > 1:
+            radiative_transfer_config["lut_grid"]["CH4"] = ch4_lut_grid.tolist()
         radiative_transfer_config["lut_grid"].update(aerosol_lut_grid)
 
     rtc_ln = {}
@@ -897,6 +905,15 @@ def build_main_config(
             "init": (h2o_lut_grid[1] + h2o_lut_grid[-1]) / 2.0,
             "prior_sigma": 100.0,
             "prior_mean": (h2o_lut_grid[1] + h2o_lut_grid[-1]) / 2.0,
+        }
+
+    if ch4_lut_grid is not None:
+        radiative_transfer_config["statevector"]["CH4"] = {
+            "bounds": [ch4_lut_grid[0], ch4_lut_grid[-1]],
+            "scale": 1,
+            "init": (ch4_lut_grid[1] + ch4_lut_grid[-1]) / 2.0,
+            "prior_sigma": 1000.0,
+            "prior_mean": (ch4_lut_grid[1] + ch4_lut_grid[-1]) / 2.0,
         }
 
     if pressure_elevation:
@@ -1052,6 +1069,8 @@ def write_modtran_template(
     elevation_km: float,
     output_file: str,
     ihaze_type: str = "AER_RURAL",
+    band_model_name: str = "p1_2013",
+    fwhm: float = 0.1,
 ):
     """Write a MODTRAN template file for use by isofit look up tables
 
@@ -1068,6 +1087,8 @@ def write_modtran_template(
         elevation_km:      elevation of the land surface in km
         output_file:       location to write the modtran template file to
         ihaze_type:        type of extinction and default meteorological range for the boundary-layer aerosol model
+        band_model_name:   name of the band model to use
+        fwhm:              full width at half maximum of the spectral response function
     """
     # make modtran configuration
     output_template = {
@@ -1122,12 +1143,12 @@ def write_modtran_template(
                     "SPECTRAL": {
                         "V1": 340.0,
                         "V2": 2520.0,
-                        "DV": 0.1,
-                        "FWHM": 0.1,
+                        "DV": fwhm,
+                        "FWHM": fwhm,
                         "YFLAG": "R",
                         "XFLAG": "N",
                         "FLAGS": "NT A   ",
-                        "BMNAME": "p1_2013",
+                        "BMNAME": band_model_name,
                     },
                     "FILEOPTIONS": {"NOPRNT": 2, "CKPRNT": True},
                 }

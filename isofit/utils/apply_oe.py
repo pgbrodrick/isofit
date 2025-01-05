@@ -21,6 +21,7 @@ from isofit.core.common import envi_header
 from isofit.utils import analytical_line as ALAlg
 from isofit.utils import empirical_line as ELAlg
 from isofit.utils import extractions, segment
+from isofit.utils.remap import remap
 
 EPS = 1e-6
 CHUNKSIZE = 256
@@ -67,6 +68,7 @@ def apply_oe(
     presolve=False,
     empirical_line=False,
     analytical_line=False,
+    simple_reassemble=False,
     ray_temp_dir="/tmp/ray",
     emulator_base=None,
     segmentation_size=40,
@@ -76,6 +78,7 @@ def apply_oe(
     prebuilt_lut=None,
     no_min_lut_spacing=False,
     inversion_windows=None,
+    modtran_coarse=False,
 ):
     """\
     Applies OE over a flightline using a radiative transfer engine. This executes
@@ -155,13 +158,16 @@ def apply_oe(
         of pixels, determined using a SLIC superpixel segmentation, and use a KDTREE of
         local solutions to interpolate radiance->reflectance. Generally a good option
         if not trying to analyze the atmospheric state at fine scale resolution.
-        Mutually exclusive with analytical_line
+        Mutually exclusive with analytical_line and simple_reassemble
     analytical_line : bool, default=False
         Use an analytical solution to the fixed atmospheric state to solve for each
         pixel.  Starts by running a full OE retrieval on each SLIC superpixel, then
         interpolates the atmospheric state to each pixel, and closes with the
         analytical solution.
-        Mutually exclusive with empirical_line
+        Mutually exclusive with empirical_line and simple_reassemble
+    simple_reassemble : bool, default=False
+        Map superpixels back to full image.
+        Mutually exclusive with empirical_line and analytical_line
     ray_temp_dir : str, default="/tmp/ray"
         Location of temporary directory for ray parallelization engine
     emulator_base : str, default=None
@@ -189,6 +195,8 @@ def apply_oe(
         Override the default inversion windows.  Will supercede any sensor specific
         defaults that are in place.
         Must be in 2-item tuples
+    modtran_coarse : bool, default=False
+        Use a coarse grid for MODTRAN runs.  This is faster, but less accurate.
 
     \b
     References
@@ -204,7 +212,7 @@ def apply_oe(
     N. Carmon, and R.O. Green. Generalized radiative transfer emulation for imaging spectroscopy reflectance
     retrievals. Remote Sensing of Environment, 261:112476, 2021.doi: 10.1016/j.rse.2021.112476.
     """
-    use_superpixels = empirical_line or analytical_line
+    use_superpixels = empirical_line or analytical_line or simple_reassemble
 
     ray.init(
         num_cpus=n_cores,
@@ -229,6 +237,11 @@ def apply_oe(
             raise ValueError(
                 "If num_neighbors has multiple elements, only --analytical_line is valid"
             )
+
+    if analytical_line + empirical_line + simple_reassemble > 1:
+        raise ValueError(
+            "Only one of --empirical_line, --analytical_line, or --simple_reassemble can be set"
+        )
 
     logging.basicConfig(
         format="%(levelname)s:%(asctime)s || %(filename)s:%(funcName)s() | %(message)s",
@@ -600,12 +613,20 @@ def apply_oe(
         lut_params.h2o_spacing_min,
     )
 
+    ch4_lut_grid = lut_params.get_grid(
+        lut_params.ch4_range[0],
+        lut_params.ch4_range[1],
+        lut_params.ch4_spacing,
+        lut_params.ch4_spacing_min,
+    )
+
     logging.info("Full (non-aerosol) LUTs:")
     logging.info(f"Elevation: {elevation_lut_grid}")
     logging.info(f"To-sensor zenith: {to_sensor_zenith_lut_grid}")
     logging.info(f"To-sun zenith: {to_sun_zenith_lut_grid}")
     logging.info(f"Relative to-sun azimuth: {relative_azimuth_lut_grid}")
     logging.info(f"H2O Vapor: {h2o_lut_grid}")
+    logging.info(f"CH4 Grid: {ch4_lut_grid}")
 
     logging.info(paths.state_subs_path)
     if (
@@ -613,6 +634,12 @@ def apply_oe(
         or not exists(paths.uncert_subs_path)
         or not exists(paths.rfl_subs_path)
     ):
+        if modtran_coarse:
+            band_model = "05_2013"
+            fwhm_modtran = 5.0
+        else:
+            band_model = "p1_2013"
+            fwhm_modtran = 0.1
         tmpl.write_modtran_template(
             atmosphere_type=atmosphere_type,
             fid=paths.fid,
@@ -625,6 +652,8 @@ def apply_oe(
             gmtime=gmtime,
             elevation_km=mean_elevation_km,
             output_file=paths.modtran_template_path,
+            band_model_name=band_model,
+            fwhm=fwhm_modtran,
         )
 
         logging.info("Writing main configuration file.")
@@ -652,6 +681,7 @@ def apply_oe(
                 if relative_azimuth_lut_grid is not None
                 else [mean_relative_azimuth]
             ),
+            ch4_lut_grid=ch4_lut_grid,
             mean_latitude=mean_latitude,
             mean_longitude=mean_longitude,
             dt=dt,
@@ -721,6 +751,14 @@ def apply_oe(
                 n_atm_neighbors=nneighbors,
                 n_cores=n_cores,
                 smoothing_sigma=atm_sigma,
+            )
+        elif remap:
+            remap(
+                paths.state_subs_path,
+                paths.lbl_working_path,
+                paths.state_working_path,
+                -9999,
+                256,
             )
 
     logging.info("Done.")

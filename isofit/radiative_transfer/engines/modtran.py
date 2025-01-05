@@ -341,6 +341,57 @@ class ModtranRT(RadiativeTransferEngine):
         if call.stdout:
             Logger.error(call.stdout.decode())
 
+    @staticmethod
+    def get_profile_alt(gndalt):
+        # E.g.: [1.5, 2, 3, 4, 5]
+        low_altitudes = [gndalt] + list(
+            np.arange(6 - np.ceil(gndalt)) + np.ceil(gndalt)
+        )
+        low_altitudes[1] = low_altitudes[0] + 0.001
+
+        # MODTRAN cannot accept a ground altitude above 6 km, so keep all layers after that
+        hi_altitudes = [
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+            11.0,
+            12.0,
+            13.0,
+            14.0,
+            15.0,
+            16.0,
+            17.0,
+            18.0,
+            19.0,
+            20.0,
+            21.0,
+            22.0,
+            23.0,
+            24.0,
+            25.0,
+            30.0,
+            35.0,
+            40.0,
+            45.0,
+            50.0,
+            55.0,
+            60.0,
+            70.0,
+            80.0,
+            100.0,
+        ]
+        if gndalt > 6:
+            logging.WARNING(
+                "Ground altitude is above 6 km, so the profile will be truncated"
+            )
+            hi_altitudes = np.array(hi_altitudes)[
+                np.where(np.array(hi_altitudes) > 6)
+            ].tolist()
+
+        return low_altitudes + hi_altitudes
+
     def modtran_driver(self, overrides):
         """Write a MODTRAN 6.0 input file."""
 
@@ -411,49 +462,7 @@ class ModtranRT(RadiativeTransferEngine):
                 ):
                     # MODTRAN cannot accept a ground altitude above 6 km, so keep all layers after that
                     gndalt = param[0]["MODTRANINPUT"]["SURFACE"]["GNDALT"]
-
-                    # E.g.: [1.5, 2, 3, 4, 5]
-                    low_altitudes = [gndalt] + list(
-                        np.arange(6 - np.ceil(gndalt)) + np.ceil(gndalt)
-                    )
-
-                    # MODTRAN cannot accept a ground altitude above 6 km, so keep all layers after that
-                    hi_altitudes = [
-                        6.0,
-                        7.0,
-                        8.0,
-                        9.0,
-                        10.0,
-                        11.0,
-                        12.0,
-                        13.0,
-                        14.0,
-                        15.0,
-                        16.0,
-                        17.0,
-                        18.0,
-                        19.0,
-                        20.0,
-                        21.0,
-                        22.0,
-                        23.0,
-                        24.0,
-                        25.0,
-                        30.0,
-                        35.0,
-                        40.0,
-                        45.0,
-                        50.0,
-                        55.0,
-                        60.0,
-                        70.0,
-                        80.0,
-                        100.0,
-                    ]
-
-                    altitudes = (
-                        low_altitudes + hi_altitudes
-                    )  # Append lists, don't add altitudes!
+                    altitudes = self.get_profile_alt(gndalt)
 
                     prof_unt_tdelta_kelvin = np.where(
                         np.array(altitudes) <= tropopause_altitude_km, val, 0
@@ -529,6 +538,33 @@ class ModtranRT(RadiativeTransferEngine):
                             prof_unt_tdelta_kelvin_dict
                         )
                         param[0]["MODTRANINPUT"]["ATMOSPHERE"]["NPROF"] = nprof + 1
+            elif key in ["CH4"]:
+                # MODTRAN cannot accept a ground altitude above 6 km, so keep all layers after that
+                gndalt = param[0]["MODTRANINPUT"]["SURFACE"]["GNDALT"]
+                altitudes = self.get_profile_alt(gndalt)
+
+                altitude_dict = {
+                    "TYPE": "PROF_ALTITUDE",
+                    "UNITS": "UNT_KILOMETERS",
+                    "PROFILE": altitudes,
+                }
+
+                ch4s = np.linspace(1.85, 0.03264, len(altitudes) - 2)
+                ch4s = [val, val] + ch4s.tolist()
+                ch4_dict = {
+                    "TYPE": "PROF_CH4",
+                    "UNITS": "UNT_DPPMV",
+                    "PROFILE": ch4s,
+                }
+
+                param[0]["MODTRANINPUT"]["ATMOSPHERE"]["PROFILES"] = [
+                    altitude_dict,
+                    ch4_dict,
+                ]
+                param[0]["MODTRANINPUT"]["ATMOSPHERE"]["NPROF"] = 2
+                param[0]["MODTRANINPUT"]["ATMOSPHERE"]["NLAYERS"] = len(altitudes)
+                param[0]["MODTRANINPUT"]["ATMOSPHERE"]["MODEL"] = "ATM_USER_ALT_PROFILE"
+                param[0]["MODTRANINPUT"]["ATMOSPHERE"]["HMODEL"] = "HMOD_CH4"
 
             # Surface parameters we want to populate even if unassigned
             elif key in ["surface_elevation_km", "GNDALT"]:

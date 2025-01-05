@@ -535,6 +535,12 @@ def apply_oe(
                     logfile=log_file,
                 )
 
+    if modtran_coarse:
+        band_model = "05_2013"
+        fwhm_modtran = 5.0
+    else:
+        band_model = "p1_2013"
+        fwhm_modtran = 0.1
     if presolve:
         # write modtran presolve template
         tmpl.write_modtran_template(
@@ -550,6 +556,8 @@ def apply_oe(
             elevation_km=mean_elevation_km,
             output_file=paths.h2o_template_path,
             ihaze_type="AER_NONE",
+            band_model_name=band_model,
+            fwhm=fwhm_modtran,
         )
 
         if emulator_base is None and prebuilt_lut is None:
@@ -634,12 +642,6 @@ def apply_oe(
         or not exists(paths.uncert_subs_path)
         or not exists(paths.rfl_subs_path)
     ):
-        if modtran_coarse:
-            band_model = "05_2013"
-            fwhm_modtran = 5.0
-        else:
-            band_model = "p1_2013"
-            fwhm_modtran = 0.1
         tmpl.write_modtran_template(
             atmosphere_type=atmosphere_type,
             fid=paths.fid,

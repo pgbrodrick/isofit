@@ -790,6 +790,7 @@ def apply_oe(
 @click.option("--presolve", is_flag=True, default=False)
 @click.option("--empirical_line", is_flag=True, default=False)
 @click.option("--analytical_line", is_flag=True, default=False)
+@click.option("--simple_reassemble", is_flag=True, default=False)
 @click.option("--ray_temp_dir", default="/tmp/ray")
 @click.option("--emulator_base")
 @click.option("--segmentation_size", default=40)

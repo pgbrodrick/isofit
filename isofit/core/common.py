@@ -98,6 +98,19 @@ class VectorInterpolator:
             ]  # binwidth arrays for each dimension
             self.maxbaseinds = np.array([len(t) - 1 for t in self.gridtuples])
 
+            self.gridarrays_deriv = []
+            for i in range(len(self.gridtuples)):
+                # double check that this handles the multi-linearity of the grid correctly
+                diff = np.diff(self.gridarrays, axis=i)
+                shape = [1] * diff.ndim
+                shape[i] = -1
+                bw = self.binwidth[i].reshape(shape)
+                self.gridarrays_deriv.append(diff / bw)
+
+            self.single_point_data_deriv = None
+            if np.prod(list(map(len, grid))) == 1:
+                self.single_point_data_deriv = self.gridarrays_deriv[0].flatten()
+
         else:
             raise AttributeError(f"Unknown interpolator version: {version!r}")
 
@@ -150,6 +163,9 @@ class VectorInterpolator:
         Returns:
             cube: np.ndarray
         """
+        if self.single_point_data is not None:
+            return self.single_point_data.flatten()
+
         deltas = [None] * points.size
         idxs = [None] * points.size
 
@@ -197,6 +213,65 @@ class VectorInterpolator:
             return self._interpolate(*args, **kwargs)
         elif self.method == 2:
             return self._multilinear_grid(*args, **kwargs)
+
+    def derivative(self, points):
+        """
+        Computes the exact derivative of the multilinear interpolation.
+        Returns an array of shape (len(points), n_channels).
+        """
+        if self.single_point_data_deriv is not None:
+            return self.single_point_data_deriv
+        if self.method != 2:
+            raise NotImplementedError(
+                "Derivative is only implemented for 'mlg' version"
+            )
+
+        deltas = [None] * points.size
+        idxs = [None] * points.size
+
+        for i, point in enumerate(points):
+            if self.cache_size is not None:
+                cache = Cache.setdefault(i, {})
+                stats = Cache["stats"].setdefault(i, {"hit": 0, "miss": 0})
+
+                if point in cache:
+                    data = cache[point]
+                    stats["hit"] += 1
+                else:
+                    if self.cache_size and len(cache) >= self.cache_size:
+                        cache.pop(list(cache)[0])
+
+                    data = self._lookup(i, point)
+                    cache[point] = data
+                    stats["miss"] += 1
+            else:
+                data = self._lookup(i, point)
+
+            deltas[i], idxs[i] = data
+
+        grad = np.zeros((len(points), self.n))
+        slice_dims = [i for i, idx in enumerate(idxs) if isinstance(idx, slice)]
+
+        for k in range(len(points)):
+            if k not in slice_dims:
+                continue
+
+            deriv_idxs = list(idxs)
+            deriv_idxs[k] = idxs[k].start
+
+            cube = np.copy(self.gridarrays_deriv[k][tuple(deriv_idxs)], order="A")
+
+            for i in slice_dims:
+                if i == k:
+                    continue
+                cube[0] *= 1 - deltas[i]
+                cube[1] *= deltas[i]
+                cube[0] += cube[1]
+                cube = cube[0]
+
+            grad[k] = cube
+
+        return grad
 
 
 def load_wavelen(wavelength_file: str):

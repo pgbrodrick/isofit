@@ -449,7 +449,7 @@ class RadiativeTransfer:
                 )
             return transup
 
-    def drdn_dRT(self, x_RT, geom, rho_dir_dir, rho_dif_dir, Ls, rdn):
+    def drdn_dRT(self, x_RT, geom, rho_dir_dir, rho_dif_dir, Ls, rdn, fd=False):
         """Derivative of estimated radiance w.r.t. RT statevector elements.
         We use a numerical approach to approximate dRT with a constant surface
         reflectance. This is a reasonable approx. for the multicomponent surface.
@@ -458,37 +458,245 @@ class RadiativeTransfer:
         the dependence of the surface reflectance on the atmosphere.
         """
         # perturb each element of the RT state vector (finite difference)
-        K_RT = []
-        x_RTs_perturb = x_RT + np.eye(len(x_RT)) * eps
-        for x_RT_perturb in list(x_RTs_perturb):
-            (
-                r,
-                L_tot,
-                L_dir_dir,
-                L_dif_dir,
-                L_dir_dif,
-                L_dif_dif,
-            ) = self.calc_RT_quantities(x_RT_perturb, geom)
+        # do this if flag is set, or we're in transmission mode
+        # below we actually do transmission mode cases....but I feel like
+        # that's probably really messy
+        if fd or RT.rt_mode == "transm":
+            K_RT = []
+            x_RTs_perturb = x_RT + np.eye(len(x_RT)) * eps
+            for x_RT_perturb in list(x_RTs_perturb):
+                (
+                    r,
+                    L_tot,
+                    L_dir_dir,
+                    L_dif_dir,
+                    L_dir_dif,
+                    L_dif_dif,
+                ) = self.calc_RT_quantities(x_RT_perturb, geom)
 
-            # Surface state is held constant?
-            rdne = self.calc_rdn(
-                x_RT_perturb,
-                rho_dir_dir,
-                rho_dif_dir,
-                Ls,
-                L_tot,
-                L_dir_dir,
-                L_dif_dir,
-                L_dir_dif,
-                L_dif_dif,
-                r,
-                geom,
-            )
-            K_RT.append((rdne - rdn) / eps)
+                # Surface state is held constant?
+                rdne = self.calc_rdn(
+                    x_RT_perturb,
+                    rho_dir_dir,
+                    rho_dif_dir,
+                    Ls,
+                    L_tot,
+                    L_dir_dir,
+                    L_dif_dir,
+                    L_dir_dif,
+                    L_dif_dif,
+                    r,
+                    geom,
+                )
+                K_RT.append((rdne - rdn) / eps)
 
-        K_RT = np.array(K_RT).T
+            K_RT = np.array(K_RT).T
 
-        return K_RT
+            return K_RT
+        else:
+            # Analytical derivative using the VectorInterpolator derivative method
+            K_RT = []
+            for RT in self.rt_engines:
+                # Get the point for interpolation
+                point = np.zeros(RT.n_point)
+                point[RT.indices.x_RT] = x_RT
+                for i, key in RT.indices.geom.items():
+                    point[i] = getattr(geom, key)
+
+                if RT.indices.convert_observer_zenith:
+                    point[RT.indices.convert_observer_zenith] = (
+                        180.0 - point[RT.indices.convert_observer_zenith]
+                    )
+
+                # Get the derivatives of the RT quantities w.r.t. the state vector
+                dr_dx = {}
+                for key, lut in RT.luts.items():
+                    dr_dx[key] = lut.derivative(point)[RT.indices.x_RT, :]
+
+                # Now we need to calculate drdn/dr_i for each RT quantity
+                # This requires differentiating the calc_rdn equation w.r.t. each RT quantity
+
+                # Get the base quantities
+                r, L_tot, L_dir_dir, L_dif_dir, L_dir_dif, L_dif_dif = (
+                    self.calc_RT_quantities(x_RT, geom)
+                )
+
+                # Special Terms
+                rho_dir_dif = (
+                    geom.bg_rfl if isinstance(geom.bg_rfl, np.ndarray) else rho_dir_dir
+                )
+                rho_dif_dif = (
+                    geom.bg_rfl if isinstance(geom.bg_rfl, np.ndarray) else rho_dif_dir
+                )
+
+                s_alb = r["sphalb"]
+                atm_surface_scattering = s_alb * rho_dif_dif
+                eq_11_term = 1 - atm_surface_scattering
+
+                # 3c model
+                if not isinstance(L_dir_dir, np.ndarray) or len(L_dir_dir) == 1:
+                    rho_dif_dif = rho_dir_dir
+                    atm_surface_scattering = 1
+                    eq_11_term = 1
+
+                # Calculate the derivative of the radiance w.r.t. each RT state vector element
+                # using the chain rule: drdn/dx_RT = sum_i (drdn/dr_i * dr_i/dx_RT)
+
+                # Initialize the derivative array
+                drdn_dx = np.zeros((len(RT.indices.x_RT), len(self.wl)))
+
+                # 1. Derivative for L_atm
+                if RT.treat_as_emissive:
+                    dL_atm_dx = dr_dx["thermal_upwelling"]
+                else:
+                    if RT.rt_mode == "rdn":
+                        dL_atm_dx = dr_dx["rhoatm"]
+                    else:
+                        verified_geom = geom.verify(self.coszen)
+                        coszen = verified_geom["coszen"]
+                        dL_atm_dx = units.transm_to_rdn(
+                            dr_dx["rhoatm"], coszen, self.solar_irr
+                        )
+                drdn_dx += dL_atm_dx
+
+                # 2. Derivative for L_up
+                # L_up = Ls * (transm_up_dir + transm_up_dif)
+                if (
+                    isinstance(r["transm_up_dir"], np.ndarray)
+                    and len(r["transm_up_dir"]) > 1
+                ):
+                    dtransup_dx = dr_dx["transm_up_dir"] + dr_dx["transm_up_dif"]
+                    dL_up_dx = Ls * dtransup_dx
+                    drdn_dx += dL_up_dx
+
+                # 3. Derivative for coupling terms
+                if not (not isinstance(L_dir_dir, np.ndarray) or len(L_dir_dir) == 1):
+                    verified_geom = geom.verify(self.coszen)
+                    coszen, cos_i, skyview_factor = (
+                        verified_geom["coszen"],
+                        verified_geom["cos_i"],
+                        verified_geom["skyview_factor"],
+                    )
+                    if self.terrain_style == "flat":
+                        cos_i = coszen
+                    cos_i = max(self.min_cos_i, cos_i)
+                    b = 1.0
+
+                    # Get derivatives of coupling terms
+                    dL_coupled_dx = []
+                    for key in RT.coupling_terms:
+                        if RT.rt_mode == "transm":
+                            dL_coupled_dx.append(
+                                units.transm_to_rdn(
+                                    dr_dx[key], coszen=coszen, solar_irr=self.solar_irr
+                                )
+                            )
+                        else:
+                            dL_coupled_dx.append(dr_dx[key])
+
+                    dL_dir_dir_dx = dL_coupled_dx[0] / coszen * cos_i * b
+                    dL_dif_dir_dx = dL_coupled_dx[1]
+                    dL_dir_dif_dx = dL_coupled_dx[2] / coszen * cos_i * b
+                    dL_dif_dif_dx = dL_coupled_dx[3]
+
+                    # Hay's model correction
+                    t_down_dir = r["transm_down_dir"]
+                    dt_down_dir_dx = dr_dx["transm_down_dir"]
+
+                    hays_model = (b * t_down_dir * (cos_i / coszen)) + (
+                        (1 - b * t_down_dir) * skyview_factor
+                    )
+                    dhays_model_dx = (b * dt_down_dir_dx * (cos_i / coszen)) - (
+                        b * dt_down_dir_dx * skyview_factor
+                    )
+
+                    # Product rule for L_dif_dir and L_dif_dif
+                    # L_dif_dir_corrected = L_dif_dir * hays_model
+                    # d(L_dif_dir_corrected)/dx = dL_dif_dir/dx * hays_model + L_dif_dir * dhays_model_dx
+                    dL_dif_dir_corrected_dx = (
+                        dL_dif_dir_dx * hays_model + L_dif_dir * dhays_model_dx
+                    )
+                    dL_dif_dif_corrected_dx = (
+                        dL_dif_dif_dx * hays_model + L_dif_dif * dhays_model_dx
+                    )
+
+                    # Add to total derivative
+                    drdn_dx += dL_dir_dir_dx * rho_dir_dir
+                    drdn_dx += dL_dif_dir_corrected_dx * rho_dif_dir / eq_11_term
+                    drdn_dx += dL_dir_dif_dx * rho_dir_dif
+                    drdn_dx += dL_dif_dif_corrected_dx * rho_dif_dif / eq_11_term
+
+                    # 4. Derivative for spherical albedo
+                    # The s_alb term appears in eq_11_term = 1 - s_alb * rho_dif_dif
+                    # and in the denominator of the L_tot term: (1 - s_alb * rho_dif_dif)
+                    ds_alb_dx = dr_dx["sphalb"]
+
+                    # Derivative of (L_dif_dir * rho_dif_dir / eq_11_term) for s_alb
+                    # d/dx (A / (1 - s_alb * B)) = A * B * ds_alb_dx / (1 - s_alb * B)^2
+                    term1 = (
+                        (L_dif_dir * rho_dif_dir)
+                        * rho_dif_dif
+                        * ds_alb_dx
+                        / (eq_11_term**2)
+                    )
+                    drdn_dx += term1
+
+                    # Derivative of (L_dif_dif * rho_dif_dif / eq_11_term) for s_alb
+                    term2 = (
+                        (L_dif_dif * rho_dif_dif)
+                        * rho_dif_dif
+                        * ds_alb_dx
+                        / (eq_11_term**2)
+                    )
+                    drdn_dx += term2
+
+                    # 5. Derivative of the L_tot term
+                    # L_tot_term = (L_tot * s_alb * rho_dif_dif * rho_dif_dif) / (1 - s_alb * rho_dif_dif)
+                    # Let L_tot = L_dir_dir + L_dif_dir_corrected + L_dir_dif + L_dif_dif_corrected
+                    dL_tot_dx = (
+                        dL_dir_dir_dx
+                        + dL_dif_dir_corrected_dx
+                        + dL_dir_dif_dx
+                        + dL_dif_dif_corrected_dx
+                    )
+
+                    # Quotient rule for L_tot_term
+                    # u = L_tot * s_alb * rho_dif_dif * rho_dif_dif
+                    # v = 1 - s_alb * rho_dif_dif
+                    # du/dx = dL_tot_dx * s_alb * rho_dif_dif^2 + L_tot * ds_alb_dx * rho_dif_dif^2
+                    # dv/dx = -ds_alb_dx * rho_dif_dif
+                    # d(u/v)/dx = (du/dx * v - u * dv/dx) / v^2
+
+                    u = L_tot * s_alb * (rho_dif_dif**2)
+                    v = eq_11_term
+                    du_dx = dL_tot_dx * s_alb * (
+                        rho_dif_dif**2
+                    ) + L_tot * ds_alb_dx * (rho_dif_dif**2)
+                    dv_dx = -ds_alb_dx * rho_dif_dif
+
+                    dL_tot_term_dx = (du_dx * v - u * dv_dx) / (v**2)
+                    drdn_dx += dL_tot_term_dx
+                else:
+                    # 1c case
+                    # L_tot_term = L_tot * rho_dir_dir
+                    # L_tot = transm_down_dif (or thermal_downwelling)
+                    if RT.treat_as_emissive:
+                        dL_tot_dx = dr_dx["thermal_downwelling"]
+                    else:
+                        if RT.rt_mode == "rdn":
+                            dL_tot_dx = dr_dx["transm_down_dif"]
+                        else:
+                            verified_geom = geom.verify(self.coszen)
+                            coszen = verified_geom["coszen"]
+                            dL_tot_dx = units.transm_to_rdn(
+                                dr_dx["transm_down_dif"], coszen, self.solar_irr
+                            )
+
+                    drdn_dx += dL_tot_dx * rho_dir_dir
+
+                K_RT.append(drdn_dx)
+
+            return np.vstack(K_RT)
 
     def drdn_dRTb(self, x_RT, geom, rho_dir_dir, rho_dif_dir, Ls, rdn):
         """Derivative of estimated rdn w.r.t. H2O_ABSCO

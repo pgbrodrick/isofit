@@ -457,46 +457,44 @@ class RadiativeTransfer:
         When using the glint model however, this does not take into account
         the dependence of the surface reflectance on the atmosphere.
         """
-        # perturb each element of the RT state vector (finite difference)
-        # do this if flag is set, or we're in transmission mode
-        # below we actually do transmission mode cases....but I feel like
-        # that's probably really messy
-        if fd or RT.rt_mode == "transm":
-            K_RT = []
-            x_RTs_perturb = x_RT + np.eye(len(x_RT)) * eps
-            for x_RT_perturb in list(x_RTs_perturb):
-                (
-                    r,
-                    L_tot,
-                    L_dir_dir,
-                    L_dif_dir,
-                    L_dir_dif,
-                    L_dif_dif,
-                ) = self.calc_RT_quantities(x_RT_perturb, geom)
+        K_RT = []
+        for RT in self.rt_engines:
+            # perturb each element of the RT state vector (finite difference)
+            # do this if flag is set, or we're in transmission mode
+            # below we actually do transmission mode cases....but I feel like
+            # that's probably really messy
+            if fd or RT.rt_mode == "transm":
+                x_RTs_perturb = x_RT + np.eye(len(x_RT)) * eps
+                for x_RT_perturb in list(x_RTs_perturb):
+                    (
+                        r,
+                        L_tot,
+                        L_dir_dir,
+                        L_dif_dir,
+                        L_dir_dif,
+                        L_dif_dif,
+                    ) = self.calc_RT_quantities(x_RT_perturb, geom)
 
-                # Surface state is held constant?
-                rdne = self.calc_rdn(
-                    x_RT_perturb,
-                    rho_dir_dir,
-                    rho_dif_dir,
-                    Ls,
-                    L_tot,
-                    L_dir_dir,
-                    L_dif_dir,
-                    L_dir_dif,
-                    L_dif_dif,
-                    r,
-                    geom,
-                )
-                K_RT.append((rdne - rdn) / eps)
+                    # Surface state is held constant?
+                    rdne = self.calc_rdn(
+                        x_RT_perturb,
+                        rho_dir_dir,
+                        rho_dif_dir,
+                        Ls,
+                        L_tot,
+                        L_dir_dir,
+                        L_dif_dir,
+                        L_dir_dif,
+                        L_dif_dif,
+                        r,
+                        geom,
+                    )
+                    K_RT.append((rdne - rdn) / eps)
 
-            K_RT = np.array(K_RT).T
+                # K_RT = np.array(K_RT).T
+            else:
+                # Analytical derivative using the VectorInterpolator derivative method
 
-            return K_RT
-        else:
-            # Analytical derivative using the VectorInterpolator derivative method
-            K_RT = []
-            for RT in self.rt_engines:
                 # Get the point for interpolation
                 point = np.zeros(RT.n_point)
                 point[RT.indices.x_RT] = x_RT
@@ -696,7 +694,7 @@ class RadiativeTransfer:
 
                 K_RT.append(drdn_dx)
 
-            return np.vstack(K_RT)
+        return np.vstack(K_RT)
 
     def drdn_dRTb(self, x_RT, geom, rho_dir_dir, rho_dif_dir, Ls, rdn):
         """Derivative of estimated rdn w.r.t. H2O_ABSCO

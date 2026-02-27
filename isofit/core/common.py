@@ -58,15 +58,16 @@ class VectorInterpolator:
         data_input: np.array,
         version="mlg",
     ):
+        self.single_point_data = None
+        self.single_point_data_deriv = None
+        self.n = data_input.shape[-1]
+
         # Determine if this a singular unique value, if so just return that directly
         val = data_input[(0,) * data_input.ndim]
         if np.isnan(val) and np.isnan(data_input).all() or np.all(data_input == val):
             self.method = -1
             self.value = val
             return
-
-        self.single_point_data = None
-        self.single_point_data_deriv = None
 
         # Lists and arrays are mutable, so copy first
         grid = grid_input.copy()
@@ -75,7 +76,6 @@ class VectorInterpolator:
         # Check if we are using a single grid point. If so, store the grid input.
         if np.prod(list(map(len, grid))) == 1:
             self.single_point_data = data
-        self.n = data.shape[-1]
 
         # RegularGrid
         if version == "rg":
@@ -219,6 +219,8 @@ class VectorInterpolator:
         Computes the exact derivative of the multilinear interpolation.
         Returns an array of shape (len(points), n_channels).
         """
+        if self.method == -1:
+            return np.zeros((len(points), self.n))
         if self.single_point_data_deriv is not None:
             return self.single_point_data_deriv
         if self.method != 2:

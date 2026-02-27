@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from numba import jit
 
 from isofit.core import units
 from isofit.core.common import eps, svd_inv_sqrt
@@ -175,6 +176,7 @@ class RadiativeTransfer:
             if "coszen" in child.lut:
                 return child.lut.coszen.data
 
+    @jit(forceobj=True)
     def calc_rdn(
         self,
         x_RT,

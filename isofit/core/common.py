@@ -30,6 +30,7 @@ import numpy as np
 # sc Adding in xarray for non-gauss SRF file io
 import xarray as xr
 import xxhash
+from numba import jit
 from scipy.interpolate import RegularGridInterpolator
 
 from isofit.core import units
@@ -101,6 +102,7 @@ class VectorInterpolator:
         else:
             raise AttributeError(f"Unknown interpolator version: {version!r}")
 
+    @jit(forceobj=True)
     def _interpolate(self, points):
         """
         Supports style 'rg'
@@ -121,6 +123,7 @@ class VectorInterpolator:
 
         return res
 
+    @jit(forceobj=True)
     def _lookup(self, i, point):
         """
         Calculates the slicing for the cube in _multilinear_grid
@@ -139,6 +142,7 @@ class VectorInterpolator:
             delta = (point - self.gridtuples[i][j]) / self.binwidth[i][j]
             return delta, slice(lower(), upper())
 
+    @jit(forceobj=True)
     def _multilinear_grid(self, points):
         """
         Cached version of Jouni's implementation

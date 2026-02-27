@@ -44,6 +44,7 @@ dependencies = [
   "xarray",
   "xxhash >= 1.2.0",
   "zarr >= 2,<3",
+  "numba>=0.64.0",
 ]
 
 [project.optional-dependencies]

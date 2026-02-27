@@ -694,7 +694,8 @@ class RadiativeTransfer:
 
                 K_RT.append(drdn_dx)
 
-        return np.vstack(K_RT)
+        K_RT = np.array(K_RT).T
+        return K_RT
 
     def drdn_dRTb(self, x_RT, geom, rho_dir_dir, rho_dif_dir, Ls, rdn):
         """Derivative of estimated rdn w.r.t. H2O_ABSCO

@@ -158,23 +158,23 @@ class VectorInterpolator:
         idxs = [None] * points.size
 
         for i, point in enumerate(points):
-            if self.cache_size is not None:
-                cache = Cache.setdefault(i, {})
-                stats = Cache["stats"].setdefault(i, {"hit": 0, "miss": 0})
+            # if self.cache_size is not None:
+            #    cache = Cache.setdefault(i, {})
+            #    stats = Cache["stats"].setdefault(i, {"hit": 0, "miss": 0})
 
-                if point in cache:
-                    data = cache[point]
-                    stats["hit"] += 1
-                else:
-                    # Simple FIFO
-                    if self.cache_size and len(cache) >= self.cache_size:
-                        cache.pop(list(cache)[0])
+            #    if point in cache:
+            #        data = cache[point]
+            #        stats["hit"] += 1
+            #    else:
+            #        # Simple FIFO
+            #        if self.cache_size and len(cache) >= self.cache_size:
+            #            cache.pop(list(cache)[0])
 
-                    data = self._lookup(i, point)
-                    cache[point] = data
-                    stats["miss"] += 1
-            else:
-                data = self._lookup(i, point)
+            #        data = self._lookup(i, point)
+            #        cache[point] = data
+            #        stats["miss"] += 1
+            # else:
+            data = self._lookup(i, point)
 
             deltas[i], idxs[i] = data
 

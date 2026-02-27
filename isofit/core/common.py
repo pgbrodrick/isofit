@@ -102,7 +102,7 @@ class VectorInterpolator:
         else:
             raise AttributeError(f"Unknown interpolator version: {version!r}")
 
-    @jit(forceobj=True)
+    @jit(nopython=True)
     def _interpolate(self, points):
         """
         Supports style 'rg'
@@ -123,7 +123,7 @@ class VectorInterpolator:
 
         return res
 
-    @jit(forceobj=True)
+    @jit(nopython=True)
     def _lookup(self, i, point):
         """
         Calculates the slicing for the cube in _multilinear_grid
@@ -142,7 +142,7 @@ class VectorInterpolator:
             delta = (point - self.gridtuples[i][j]) / self.binwidth[i][j]
             return delta, slice(lower(), upper())
 
-    @jit(forceobj=True)
+    @jit(nopython=True)
     def _multilinear_grid(self, points):
         """
         Cached version of Jouni's implementation

@@ -176,7 +176,7 @@ class RadiativeTransfer:
             if "coszen" in child.lut:
                 return child.lut.coszen.data
 
-    @jit(forceobj=True)
+    @jit(nopython=True)
     def calc_rdn(
         self,
         x_RT,

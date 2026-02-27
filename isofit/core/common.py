@@ -66,6 +66,7 @@ class VectorInterpolator:
             return
 
         self.single_point_data = None
+        self.single_point_data_deriv = None
 
         # Lists and arrays are mutable, so copy first
         grid = grid_input.copy()
@@ -107,7 +108,6 @@ class VectorInterpolator:
                 bw = self.binwidth[i].reshape(shape)
                 self.gridarrays_deriv.append(diff / bw)
 
-            self.single_point_data_deriv = None
             if np.prod(list(map(len, grid))) == 1:
                 self.single_point_data_deriv = self.gridarrays_deriv[0].flatten()
 

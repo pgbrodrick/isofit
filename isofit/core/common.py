@@ -69,7 +69,7 @@ def fast_searchsorted(array, target):
 
 
 @njit(cache=True)
-def _numba_mlg_kernel(point, grid_tuples, data):
+def _numba_mlg_kernel(point, grid_tuples, flat_data, strides, nchannels):
     """
     Numba-accelerated n-dimensional multilinear interpolator kernel. Performs
     linear interpolation across a multi-dimensional look-up table for a single
@@ -110,18 +110,8 @@ def _numba_mlg_kernel(point, grid_tuples, data):
             low_indices[i] = idx
             deltas[i] = (p - grid[idx]) / (grid[idx + 1] - grid[idx])
 
-    num_channels = data.shape[-1]
     num_corners = 1 << dims
-    result = np.zeros(num_channels)
-
-    # Manual stride calculation for flat indexing
-    strides = np.zeros(dims + 1, dtype=int32)
-    current_stride = 1
-    for i in range(dims, -1, -1):
-        strides[i] = current_stride
-        current_stride *= data.shape[i]
-
-    flat_data = data.ravel()
+    result = np.zeros(nchannels)
 
     for c in range(num_corners):
         weight = 1.0
@@ -135,7 +125,7 @@ def _numba_mlg_kernel(point, grid_tuples, data):
                 flat_idx += low_indices[d] * strides[d]
 
         start = flat_idx
-        end = start + num_channels
+        end = start + nchannels
         result += flat_data[start:end] * weight
 
     return result
@@ -207,10 +197,25 @@ class VectorInterpolator:
                 [np.array(g, dtype=np.float64) for g in grid_input]
             )
             self.gridarrays = data_input.astype(np.float64)
+            self.flat_data = self.gridarrays.ravel()
+
+            data_shape = self.gridarrays.shape
+            self.nchannels = data_shape[-1]
+            strides = np.empty(len(data_shape), dtype=np.intp)
+            strides[-1] = 1
+            for d in range(len(data_shape) - 2, -1, -1):
+                strides[d] = strides[d + 1] * data_shape[d + 1]
+            self.strides = np.ascontiguousarray(strides, dtype=np.intp)
 
             # run a warm-up for numba
             dummy_point = np.array([g[0] for g in self.grid_tuples], dtype=np.float64)
-            _ = _numba_mlg_kernel(dummy_point, self.grid_tuples, self.gridarrays)
+            _ = _numba_mlg_kernel(
+                dummy_point,
+                self.grid_tuples,
+                self.flat_data,
+                self.strides,
+                self.nchannels,
+            )
 
         else:
             raise AttributeError(f"Unknown interpolator version: {version!r}")
@@ -312,7 +317,9 @@ class VectorInterpolator:
         elif self.method == 2:
             return self._multilinear_grid(*args, **kwargs)
         if self.method == 3:
-            return _numba_mlg_kernel(args[0], self.grid_tuples, self.gridarrays)
+            return _numba_mlg_kernel(
+                args[0], self.grid_tuples, self.flat_data, self.strides, self.nchannels
+            )
 
 
 def load_wavelen(wavelength_file: str):

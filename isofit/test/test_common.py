@@ -182,3 +182,4 @@ def interp_test(method_a, method_b):
 def test_interpolators():
     interp_test("rg", "mlg")
     interp_test("rg", "mlg_numba")
+    interp_test("rg", "mlg-cache")

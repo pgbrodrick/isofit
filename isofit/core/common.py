@@ -21,7 +21,9 @@
 import json
 import os
 from collections import OrderedDict
+from datetime import datetime as dtt
 from difflib import SequenceMatcher
+from functools import partial
 from os.path import expandvars
 from typing import List
 
@@ -40,6 +42,10 @@ eps = 1e-5
 
 # Global variable makes it non-shared mem in ray
 Cache = {"stats": {}}
+
+
+def hash_ar(ar):
+    return xxhash.xxh64(ar.tobytes()).intdigest()
 
 
 @njit(inline="always")
@@ -69,25 +75,7 @@ def fast_searchsorted(array, target):
 
 
 @njit(cache=True)
-def _numba_mlg_kernel(point, grid_tuples, flat_data, strides, nchannels):
-    """
-    Numba-accelerated n-dimensional multilinear interpolator kernel. Performs
-    linear interpolation across a multi-dimensional look-up table for a single
-    point, outputting a vector of values.
-
-    Args:
-        point: 1D array of floats, representing the coordinate to interpolate
-               within the n-dimensional grid.
-        grid_tuples: Tuple of 1D arrays of floats, where each array defines the
-                     sorted grid points for a single dimension.
-        data: N+1 dimensional array of floats, where the first N dimensions
-              correspond to grid_tuples and the last dimension contains the
-              output vector (channels).
-
-    Returns:
-        result: 1D array of floats, the interpolated output vector of length
-                equal to data.shape[-1].
-    """
+def _numba_slice_kernel(point, grid_tuples):
     dims = len(point)
     low_indices = np.zeros(dims, dtype=int32)
     deltas = np.zeros(dims, dtype=float64)
@@ -110,6 +98,29 @@ def _numba_mlg_kernel(point, grid_tuples, flat_data, strides, nchannels):
             low_indices[i] = idx
             deltas[i] = (p - grid[idx]) / (grid[idx + 1] - grid[idx])
 
+    return low_indices, deltas, dims
+
+
+@njit(cache=True)
+def _numba_mlg_kernel(low_indices, deltas, dims, flat_data, strides, nchannels):
+    """
+    Numba-accelerated n-dimensional multilinear interpolator kernel. Performs
+    linear interpolation across a multi-dimensional look-up table for a single
+    point, outputting a vector of values.
+
+    Args:
+        point: 1D array of floats, representing the coordinate to interpolate
+               within the n-dimensional grid.
+        grid_tuples: Tuple of 1D arrays of floats, where each array defines the
+                     sorted grid points for a single dimension.
+        data: N+1 dimensional array of floats, where the first N dimensions
+              correspond to grid_tuples and the last dimension contains the
+              output vector (channels)
+
+    Returns:
+        result: 1D array of floats, the interpolated output vector of length
+                equal to data.shape[-1].
+    """
     num_corners = 1 << dims
     result = np.zeros(nchannels)
 
@@ -149,6 +160,7 @@ class VectorInterpolator:
         data_input: np.array,
         version="mlg_numba",
     ):
+        print(version)
         # Determine if this a singular unique value, if so just return that directly
         val = data_input[(0,) * data_input.ndim]
         if np.isnan(val) and np.isnan(data_input).all() or np.all(data_input == val):
@@ -180,7 +192,7 @@ class VectorInterpolator:
             self.method = 2
 
             # None to disable, 0 for unlimited, negatives == 1
-            self.cache_size = 1
+            self.cache_size = 0
 
             self.gridtuples = [np.array(t) for t in grid]
             self.gridarrays = data
@@ -205,18 +217,39 @@ class VectorInterpolator:
             strides[-1] = 1
             for d in range(len(data_shape) - 2, -1, -1):
                 strides[d] = strides[d + 1] * data_shape[d + 1]
+
             self.strides = np.ascontiguousarray(strides, dtype=np.intp)
 
             # run a warm-up for numba
             dummy_point = np.array([g[0] for g in self.grid_tuples], dtype=np.float64)
-            _ = _numba_mlg_kernel(
-                dummy_point,
-                self.grid_tuples,
-                self.flat_data,
-                self.strides,
-                self.nchannels,
+            self._numba_slice_kernel = partial(
+                _numba_slice_kernel, grid_tuples=self.grid_tuples
+            )
+            self._numba_mlg_kernel = partial(
+                _numba_mlg_kernel,
+                flat_data=self.flat_data,
+                strides=self.strides,
+                nchannels=self.nchannels,
             )
 
+            _ = self._numba_mlg_kernel(*self._numba_slice_kernel(dummy_point))
+
+        elif version == "mlg-cache":
+            self.cache_size = 0
+            self.grid_cache_size = 60
+            self.GridCache = {}
+
+            self.gridtuples = [np.array(t) for t in grid]
+            self.gridarrays = data
+            self.binwidth = [
+                t[1:] - t[:-1] for t in self.gridtuples
+            ]  # binwidth arrays for each dimension
+            self.maxbaseinds = np.array([len(t) - 1 for t in self.gridtuples])
+
+            self.method = 4
+            self.cachei = list(range(len(self.gridtuples)))
+
+            # None to disable, 0 for unlimited, negatives == 1
         else:
             raise AttributeError(f"Unknown interpolator version: {version!r}")
 
@@ -258,17 +291,7 @@ class VectorInterpolator:
             delta = (point - self.gridtuples[i][j]) / self.binwidth[i][j]
             return delta, slice(lower(), upper())
 
-    def _multilinear_grid(self, points):
-        """
-        Cached version of Jouni's implementation
-
-        Args:
-            points: The point being interpolated. If at the limit, the extremal value in
-                    the grid is returned.
-
-        Returns:
-            cube: np.ndarray
-        """
+    def _slice(self, points):
         deltas = [None] * points.size
         idxs = [None] * points.size
 
@@ -293,6 +316,21 @@ class VectorInterpolator:
 
             deltas[i], idxs[i] = data
 
+        return deltas, idxs
+
+    def _multilinear_grid(self, points):
+        """
+        Cached version of Jouni's implementation
+
+        Args:
+            points: The point being interpolated. If at the limit, the extremal value in
+                    the grid is returned.
+
+        Returns:
+            cube: np.ndarray
+        """
+        deltas, idxs = self._slice(points)
+
         cube = np.copy(self.gridarrays[tuple(idxs)], order="A")
 
         # Only linear interpolate sliced dimensions
@@ -305,6 +343,40 @@ class VectorInterpolator:
 
         return cube
 
+    @staticmethod
+    def _mlg_kernel(cube, interpi, idxs, deltas):
+        # Only linear interpolate sliced dimensions
+        for i in interpi:
+            idx = idxs[i]
+            delta = deltas[i]
+            if isinstance(idx, slice):
+                cube[0] *= 1 - delta
+                cube[1] *= delta
+                cube[0] += cube[1]
+                cube = cube[0]
+
+        return cube
+
+    def _mlg_grid_cache(self, points):
+        deltas, idxs = self._slice(points)
+        stats = self.GridCache.setdefault("stats", {"hit": 0, "miss": 0})
+
+        if hash_ar(points[self.cachei]) in self.GridCache:
+            self.GridCache["stats"]["hit"] += 1
+
+            return self.GridCache[hash_ar(points[self.cachei])]
+
+        else:
+            stats["miss"] += 1
+            if self.grid_cache_size and len(self.GridCache) >= self.grid_cache_size + 1:
+                self.GridCache.pop(list(self.GridCache)[0])
+
+            cube = np.copy(self.gridarrays[tuple(idxs)], order="A")
+            cube = self._mlg_kernel(cube, self.cachei, idxs, deltas)
+            self.GridCache[hash_ar(points[self.cachei])] = cube
+
+            return cube
+
     def __call__(self, *args, **kwargs):
         """
         Passes args to the appropriate interpolation method defined by the version at
@@ -316,10 +388,10 @@ class VectorInterpolator:
             return self._interpolate(*args, **kwargs)
         elif self.method == 2:
             return self._multilinear_grid(*args, **kwargs)
-        if self.method == 3:
-            return _numba_mlg_kernel(
-                args[0], self.grid_tuples, self.flat_data, self.strides, self.nchannels
-            )
+        elif self.method == 3:
+            return self._numba_mlg_kernel(*self._numba_slice_kernel(*args, **kwargs))
+        elif self.method == 4:
+            return self._mlg_grid_cache(*args, **kwargs)
 
 
 def load_wavelen(wavelength_file: str):
@@ -425,7 +497,7 @@ def svd_inv_sqrt(
     # Default to using numpy eigh (which uses LAPACK evd driver by default).
     try:
         D, P = np.linalg.eigh(C)
-    except:
+    except Exception:
         D, P = None, None
 
     # Sanity check for edge cases that we encounter with negative eigen values, and we offset by inv_eps.
@@ -437,7 +509,7 @@ def svd_inv_sqrt(
                 D, P = np.linalg.eigh(C + np.eye(C.shape[0]) * inv_eps)
                 if not (np.any(D < 0) or np.any(np.isnan(D))):
                     break
-            except:
+            except Exception:
                 continue
         else:
             raise ValueError(
@@ -889,9 +961,6 @@ def ray_start(num_cores, num_cpus=2, memory_b=-1):
         base_args.append(address)
 
         result = subprocess.run(base_args, capture_output=True)
-
-
-from datetime import datetime as dtt
 
 
 class Track:

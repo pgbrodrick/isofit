@@ -235,8 +235,8 @@ class VectorInterpolator:
             _ = self._numba_mlg_kernel(*self._numba_slice_kernel(dummy_point))
 
         elif version == "mlg-cache":
-            self.cache_size = 0
-            self.grid_cache_size = 60
+            self.cache_size = 1
+            self.grid_cache_size = 1000
             self.GridCache = {}
 
             self.gridtuples = [np.array(t) for t in grid]
@@ -367,7 +367,7 @@ class VectorInterpolator:
             return self.GridCache[hash_ar(points[self.cachei])]
 
         else:
-            stats["miss"] += 1
+            self.GridCache["stats"]["miss"] += 1
             if self.grid_cache_size and len(self.GridCache) >= self.grid_cache_size + 1:
                 self.GridCache.pop(list(self.GridCache)[0])
 

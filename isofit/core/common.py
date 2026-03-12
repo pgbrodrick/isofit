@@ -299,6 +299,26 @@ def svd_inv_sqrt(
         if h in hashtable:
             return hashtable[h]
 
+    # Try Cholesky factorization first for speed (only for pos-definite matrices)
+    try:
+        from scipy.linalg import cholesky
+        from scipy.linalg.lapack import dtrtri
+
+        L_chol = cholesky(C, lower=True)
+        Linv, info = dtrtri(L_chol, lower=True)
+        if info == 0:
+            Cinv = Linv.T @ Linv
+            Cinv_sqrt = Linv.T
+
+            if (hashtable is not None) and (max_hash_size is not None):
+                hashtable[h] = (Cinv, Cinv_sqrt)
+                while len(hashtable) > max_hash_size:
+                    hashtable.popitem(last=False)
+
+            return Cinv, Cinv_sqrt
+    except Exception:
+        pass
+
     # Default to using numpy eigh (which uses LAPACK evd driver by default).
     try:
         D, P = np.linalg.eigh(C)
@@ -322,10 +342,10 @@ def svd_inv_sqrt(
                 + "even after adding {} to the diagonal.".format(inv_eps)
             )
 
-    Ds = np.diag(1 / np.sqrt(D))
-    L = P @ Ds
+    Ds = 1 / np.sqrt(D)
+    L = P * Ds
     Cinv_sqrt = L @ P.T
-    Cinv = L @ L.T
+    Cinv = (P * (Ds**2)) @ P.T
 
     # If there is a hash table, cache our solution.  Bound the total cache
     # size by removing any extra items in FIFO order.

@@ -265,6 +265,7 @@ def invert_analytical(
         x: MAP estimate of the mean
         S: diagonal conditional posterior covariance estimate
     """
+    from scipy.linalg import cho_factor, cho_solve
     from scipy.linalg.blas import dsymv
     from scipy.linalg.lapack import dpotrf, dpotri
 
@@ -335,20 +336,20 @@ def invert_analytical(
 
         x_surface, x_RT, x_instrument = fm.unpack(x)
 
-        C = dpotrf(Seps, 1)[0]
-        P = dpotri(C, 1)[0]
-
-        P_tilde = ((L.T @ P) @ L).T
+        C, lower = cho_factor(Seps, lower=True)
+        P_tilde = L.T @ cho_solve((C, lower), L)
         P_rcond = Sa_inv[iv_idx, :][:, iv_idx] + P_tilde
 
         LI_rcond = dpotrf(P_rcond)[0]
         C_rcond = dpotri(LI_rcond)[0]
 
         y = meas[winidx] - L_atm[winidx] - eof_offset[winidx]
+        L_T_P_y = L.T @ cho_solve((C, lower), y)
+
         xk = dsymv(
             1,
             C_rcond,
-            (L.T @ dsymv(1, P, y) + prprod[iv_idx]),
+            (L_T_P_y + prprod[iv_idx]),
         )
 
         # Save trajectory step:

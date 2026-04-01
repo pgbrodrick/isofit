@@ -979,6 +979,20 @@ def write_modtran_template(
             json.dumps(output_template, cls=SerialEncoder, indent=4, sort_keys=True)
         )
 
+def aerosol_init_heuristic(grid):
+    """
+    Get the aerosol starting position given an input grid.  This is a heuristic for an initial guess, which
+    is intended to be 'clear sky', but off the bounds. Presumes a reasonable starting range of aerosols.
+
+    Args:
+        grid: the grid of aerosol values to be explored in the LUT
+    
+    Returns:
+        a single aerosol value to use as the initial guess for the retrieval
+    """
+    sp = float((grid[-1] - grid[0]) / 10.0 + grid[0])
+    return sp
+
 
 def load_climatology(
     config_path: str,
@@ -1032,9 +1046,9 @@ def load_climatology(
             aerosol_state_vector["AERFRAC_{}".format(_a)] = {
                 "bounds": [float(alr[0]), float(alr[1])],
                 "scale": 1,
-                "init": float((alr[1] - alr[0]) / 10.0 + alr[0]),
+                "init": aerosol_init_heuristic(alr),
                 "prior_sigma": 10.0,
-                "prior_mean": float((alr[1] - alr[0]) / 10.0 + alr[0]),
+                "prior_mean": aerosol_init_heuristic(alr),
             }
 
             aerosol_lut_grid["AERFRAC_{}".format(_a)] = aerosol_lut.tolist()
@@ -1052,9 +1066,9 @@ def load_climatology(
         aerosol_state_vector["AOT550"] = {
             "bounds": [float(alr[0]), float(alr[1])],
             "scale": 1,
-            "init": float((alr[1] - alr[0]) / 10.0 + alr[0]),
+            "init": aerosol_init_heuristic(alr),
             "prior_sigma": 10.0,
-            "prior_mean": float((alr[1] - alr[0]) / 10.0 + alr[0]),
+            "prior_mean": aerosol_init_heuristic(alr),
         }
 
     logging.info("Loading Climatology")
@@ -1586,6 +1600,8 @@ def make_rt_config(
                 )
                 to_remove.append(gn)
             else:
+
+                # Heuristic goes here - get_lut_subset pulls the first member...this is a bad idea
                 lut_grid[gn] = get_lut_subset(gc)
 
     for tr in np.unique(to_remove):
@@ -1597,12 +1613,35 @@ def make_rt_config(
     lut_names = {key: None for key in lut_grid.keys()}
     if prebuilt_lut_path is not None:
         for dim in ncds.dimensions:
+
+        
             if dim != "wl" and dim not in lut_names:
-                if "AER" in dim or "AOT" in dim or "AOD" in dim or "CO2" in dim:
-                    # Match the 'init' from the statevector - as a good starting point
-                    lut_names[dim] = {"interp": rt_statevector[dim]["init"]}
+
+                # If we've gotten here, we're looking at a dimension in the LUT that's
+                # not something we want to look at explicitly.  If it's atmospheric,
+                # use a heuristic so we get a reaonsable value.  If it's geometric,
+                # use value from obs
+
+                # Note - this differs from not using a prebuilt LUT, where
+                # we use the scene-wise mean.  That information isn't available here,
+                # but we could pass it in.
+
+                # TODO - even as is, we should limit the LUT (using gte/lte) to the
+                # range of plausible values (e.g., from the potential lut grid), but
+                # as with the scene-wise mean, this would require a refactor
+
+                # CO2 - stick to the mean, assume a reasonable range
+                if "CO2" in dim:
+                    lut_names[dim] = {"interp": "mean"}
+
+                # Aerosols - use the same 'clear sky' heuristic as for the init
+                elif "AER" in dim or "AOT" in dim or "AOD":
+                    lut_names[dim] = {"interp": aerosol_init_heuristic(ncds[dim][:])}
+
+                # Anything else, interpolate to the scene-wide mean
                 else:
                     lut_names[dim] = None
+
         ncds.close()
     radiative_transfer_config["radiative_transfer_engines"]["vswir"][
         "lut_names"

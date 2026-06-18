@@ -50,6 +50,290 @@ from isofit.inversion.inverse_simple import (
 from isofit.utils.atm_interpolation import atm_interpolation
 
 
+def batch_create_geometries(
+    obs_array: np.ndarray,
+    loc_array: np.ndarray,
+    svf_array: np.ndarray,
+    esd: float,
+    coszen: float,
+    full_config,
+) -> list[Geometry]:
+    """Create multiple Geometry objects at once.
+
+    Args:
+        obs_array: (n_pixels, n_obs_bands) observation data
+        loc_array: (n_pixels, n_loc_bands) location data
+        svf_array: (n_pixels,) skyview factor data
+        esd: Earth-sun distance
+        coszen: Cosine of zenith angle
+        full_config: ISOFIT configuration object
+
+    Returns:
+        List of Geometry objects
+    """
+    n_pixels = obs_array.shape[0]
+    geometries = []
+
+    for i in range(n_pixels):
+        geom = Geometry(
+            obs=obs_array[i, :],
+            loc=loc_array[i, :],
+            esd=esd,
+            svf=svf_array[i] if len(svf_array) > 0 else 1,
+            coszen=coszen,
+            full_config=full_config,
+        )
+        geometries.append(geom)
+
+    return geometries
+
+
+def batch_invert_analytical(
+    fm,
+    winidx: np.ndarray,
+    meas_batch: np.ndarray,
+    geom_batch: list[Geometry],
+    x0_batch: np.ndarray,
+    sub_state_batch: np.ndarray,
+    num_iter: int = 1,
+    diag_uncert: bool = True,
+    outside_ret_const: float = -0.01,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Perform analytical inversion on a batch of pixels.
+
+    This function processes multiple pixels that share the same atmospheric state,
+    allowing for more efficient computation through vectorization.
+
+    Args:
+        fm: Forward model
+        winidx: Indices of retrieval windows
+        meas_batch: (n_pixels, n_channels) radiance measurements
+        geom_batch: List of n_pixels Geometry objects
+        x0_batch: (n_pixels, n_state) initial state vectors
+        sub_state_batch: (n_pixels, n_state) superpixel state vectors
+        num_iter: Number of iterations
+        diag_uncert: Whether to return diagonal uncertainty
+        outside_ret_const: Constant value for bands outside retrieval windows
+
+    Returns:
+        trajectories: (n_pixels, num_iter+1, n_state) state trajectories
+        uncertainties: (n_pixels, n_state) posterior uncertainties
+    """
+    n_pixels = meas_batch.shape[0]
+    n_state = x0_batch.shape[1]
+    n_channels = meas_batch.shape[1]
+
+    trajectories = np.zeros((n_pixels, num_iter + 1, n_state))
+    uncertainties = np.zeros((n_pixels, n_state))
+
+    trajectories[:, 0, :] = x0_batch
+
+    # Process each pixel (vectorization possible for shared atmosphere)
+    for px in range(n_pixels):
+        x = x0_batch[px].copy()
+        sub_state = sub_state_batch[px]
+        geom = geom_batch[px]
+        meas = meas_batch[px]
+
+        x_surface, x_atmosphere, x_instrument = fm.unpack(x)
+        sub_surface, sub_atmosphere, sub_instrument = fm.unpack(sub_state)
+
+        # Surface reflectance at RT resolution
+        rho_dir_dir, rho_dif_dir = fm.calc_rfl(sub_state, geom)
+        rho_dif_dir = fm.upsample(fm.surface.wl, rho_dif_dir)
+
+        rho_dif_dif = (
+            fm.upsample(fm.surface.wl, geom.bg_rfl)
+            if isinstance(geom.bg_rfl, np.ndarray)
+            else rho_dif_dir
+        )
+
+        # Atmosphere quantities
+        (
+            r,
+            L_tot,
+            L_dir_dir,
+            L_dif_dir,
+            L_dir_dif,
+            L_dif_dif,
+        ) = fm.calc_atmosphere_quantities(x_atmosphere, geom, rho_dif_dif=rho_dif_dif)
+
+        L_atm = fm.atmosphere.get_L_atm(x_atmosphere, geom)
+        s = r["sphalb"]
+        bg = s * rho_dif_dir
+        eof_offset = fm.eof_offset(sub_instrument)
+
+        full_idx = np.concatenate((winidx, fm.idx_surf_nonrfl), axis=0)
+        outside_ret_windows = np.ones(len(fm.idx_surface), dtype=bool)
+        outside_ret_windows[full_idx] = False
+        outside_ret_windows = np.where(outside_ret_windows)[0]
+        iv_idx = fm.surface.analytical_iv_idx
+
+        # H matrix
+        H = fm.surface.analytical_model(
+            bg,
+            L_tot=L_tot,
+            geom=geom,
+            L_dir_dir=L_dir_dir,
+            L_dir_dif=L_dir_dif,
+            L_dif_dir=L_dif_dir,
+            L_dif_dif=L_dif_dif,
+        )
+        L = H[winidx, :][:, iv_idx]
+
+        # Iterate
+        for n in range(num_iter):
+            Seps = fm.Seps(x, meas, geom)[winidx, :][:, winidx]
+            Sa, Sa_inv, Sa_inv_sqrt = fm.Sa(x, geom)
+            Sa_inv = Sa_inv[fm.idx_surface, :][:, fm.idx_surface]
+
+            xa_full = fm.xa(x, geom)
+            xa_surface = xa_full[fm.idx_surface]
+            prprod = Sa_inv @ xa_surface
+
+            x_surface, x_atmosphere, x_instrument = fm.unpack(x)
+
+            C = dpotrf(Seps, 1)[0]
+            P = dpotri(C, 1)[0]
+
+            P_tilde = ((L.T @ P) @ L).T
+            P_rcond = Sa_inv[iv_idx, :][:, iv_idx] + P_tilde
+
+            LI_rcond = dpotrf(P_rcond)[0]
+            C_rcond = dpotri(LI_rcond)[0]
+
+            y = meas[winidx] - L_atm[winidx] - eof_offset[winidx]
+            xk = dsymv(1, C_rcond, (L.T @ dsymv(1, P, y) + prprod[iv_idx]))
+
+            x_surface[iv_idx] = xk
+            if outside_ret_const is None:
+                x_surface[outside_ret_windows] = xa_surface[outside_ret_windows]
+            else:
+                x_surface[outside_ret_windows] = outside_ret_const
+
+            x[fm.idx_surface] = x_surface
+            trajectories[px, n + 1, :] = x
+
+        if diag_uncert:
+            if len(C_rcond):
+                full_unc = np.ones(len(x))
+                full_unc[iv_idx] = np.sqrt(np.diag(C_rcond))
+            else:
+                full_unc = np.ones(len(x))
+                full_unc[iv_idx] = -9999
+
+            uncertainties[px, :] = full_unc
+
+    return trajectories, uncertainties
+
+
+def batch_read_pixels(
+    index_pairs: np.ndarray,
+    rdn_memmap: np.ndarray,
+    loc_memmap: np.ndarray,
+    obs_memmap: np.ndarray,
+    rt_state_memmap: np.ndarray,
+    svf_memmap: np.ndarray,
+    subs_state_memmap: np.ndarray,
+    lbl_memmap: np.ndarray,
+    iv_idx: np.ndarray,
+    idx_atmosphere: np.ndarray,
+    idx_instrument: np.ndarray,
+    nstate: int,
+    radiance_correction: np.ndarray = None,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    list,
+]:
+    """Read a batch of pixels from memory-mapped arrays efficiently.
+
+    Args:
+        index_pairs: (n_pixels, 2) array of (row, col) indices
+        rdn_memmap: Radiance memory map
+        loc_memmap: Location memory map
+        obs_memmap: Observation memory map
+        rt_state_memmap: RT state memory map
+        svf_memmap: Skyview factor memory map
+        subs_state_memmap: Subsample state memory map
+        lbl_memmap: Label memory map
+        iv_idx: Analytical inversion indices
+        idx_atmosphere: Atmosphere state indices
+        idx_instrument: Instrument state indices
+        nstate: Number of state vector elements
+        radiance_correction: Optional radiance correction factor
+
+    Returns:
+        Tuple of (meas_batch, loc_batch, obs_batch, svf_batch, x_atmosphere_batch, sub_state_batch, lbl_idx_batch, valid_mask)
+    """
+    n_pixels = len(index_pairs)
+    n_channels = rdn_memmap.shape[2]
+
+    # Pre-allocate arrays
+    meas_batch = np.zeros((n_pixels, n_channels))
+    loc_batch = np.zeros((n_pixels, loc_memmap.shape[2]))
+    obs_batch = np.zeros((n_pixels, obs_memmap.shape[2]))
+    svf_batch = np.zeros(n_pixels) if len(svf_memmap) > 0 else np.array([])
+    x_atmosphere_batch = np.zeros((n_pixels, len(idx_atmosphere)))
+    sub_state_batch = np.zeros((n_pixels, nstate))
+    lbl_idx_batch = np.zeros(n_pixels, dtype=int)
+    valid_mask = []
+
+    for i, (r, c, *_) in enumerate(index_pairs):
+        meas = rdn_memmap[r, c, :]
+
+        if radiance_correction is not None:
+            meas = meas.copy() * radiance_correction
+
+        if np.all(meas < 0):
+            continue
+
+        meas_batch[i, :] = meas
+        loc_batch[i, :] = loc_memmap[r, c, :]
+        obs_batch[i, :] = obs_memmap[r, c, :]
+        if len(svf_memmap) > 0:
+            svf_batch[i] = svf_memmap[r, c]
+        x_atmosphere_batch[i, :] = rt_state_memmap[r, c, :]
+
+        lbl_idx = int(lbl_memmap[r, c, 0])
+        lbl_idx_batch[i] = lbl_idx
+
+        # Build sub_state from superpixel
+        sub_state = np.zeros(nstate)
+        sub_state[idx_atmosphere] = x_atmosphere_batch[i, :]
+        # Note: This requires access to fm.idx_surface which we'll handle in caller
+        sub_state_batch[i, :] = sub_state
+
+        valid_mask.append(i)
+
+    # Trim to valid pixels
+    if len(valid_mask) < n_pixels:
+        meas_batch = meas_batch[valid_mask]
+        loc_batch = loc_batch[valid_mask]
+        obs_batch = obs_batch[valid_mask]
+        if len(svf_batch) > 0:
+            svf_batch = svf_batch[valid_mask]
+        x_atmosphere_batch = x_atmosphere_batch[valid_mask]
+        sub_state_batch = sub_state_batch[valid_mask]
+        lbl_idx_batch = lbl_idx_batch[valid_mask]
+
+    return (
+        meas_batch,
+        loc_batch,
+        obs_batch,
+        svf_batch,
+        x_atmosphere_batch,
+        sub_state_batch,
+        lbl_idx_batch,
+        valid_mask,
+    )
+
+
 def retrieve_winidx(config):
     wl_init, fwhm_init = load_wavelen(config.forward_model.instrument.wavelength_file)
     windows = config.implementation.inversion.windows
@@ -81,6 +365,8 @@ def analytical_line(
     logfile: str = None,
     initializer: str = "algebraic",
     segmentation_size: int = 40,
+    use_batched: bool = False,
+    batch_size: int = 100,
 ) -> None:
     """
     TODO: Description
@@ -325,9 +611,17 @@ def analytical_line(
 
         # run workers
         start_time = time.time()
-        results = list(
-            workers.map_unordered(lambda a, b: a.run_chunks.remote(b), line_breaks)
-        )
+        if use_batched:
+            results = list(
+                workers.map_unordered(
+                    lambda a, b: a.run_chunks_batched.remote(b, batch_size=batch_size),
+                    line_breaks,
+                )
+            )
+        else:
+            results = list(
+                workers.map_unordered(lambda a, b: a.run_chunks.remote(b), line_breaks)
+            )
 
         # Cache atmosphere
         if not i:
@@ -463,10 +757,294 @@ class Worker(object):
 
         self.initializer = initializer
 
+    def run_chunks_batched(
+        self, line_breaks: tuple, fill_value: float = -9999.0, batch_size: int = 100
+    ) -> None:
+        """
+        Batched version of run_chunks that processes multiple pixels at once.
+
+        Args:
+            line_breaks: (start_line, stop_line) tuple
+            fill_value: Fill value for invalid pixels
+            batch_size: Number of pixels to process in each batch
+        """
+        # Profiling timers
+        profile_times = {
+            "io_read": 0.0,
+            "geometry_creation": 0.0,
+            "invert_algebraic": 0.0,
+            "invert_analytical": 0.0,
+            "state_fill": 0.0,
+            "io_write": 0.0,
+            "total": 0.0,
+        }
+        chunk_start = time.time()
+
+        # Unpack arguments
+        start_line, stop_line = line_breaks
+
+        # Set up outputs
+        output_rfl = (
+            envi.open(envi_header(self.rfl_outpath))
+            .open_memmap(interleave="bip", writable=False)[start_line:stop_line, ...]
+            .copy()
+        )
+
+        output_rfl_unc = (
+            envi.open(envi_header(self.unc_outpath))
+            .open_memmap(interleave="bip", writable=False)[start_line:stop_line, ...]
+            .copy()
+        )
+
+        if self.non_rfl_unc_outpath:
+            output_non_rfl = (
+                envi.open(envi_header(self.non_rfl_outpath))
+                .open_memmap(interleave="bip", writable=False)[
+                    start_line:stop_line, ...
+                ]
+                .copy()
+            )
+
+            output_non_rfl_unc = (
+                envi.open(envi_header(self.non_rfl_unc_outpath))
+                .open_memmap(interleave="bip", writable=False)[
+                    start_line:stop_line, ...
+                ]
+                .copy()
+            )
+
+        # Find intersection between index_pairs and class_idx_pairs
+        index_pairs = self.class_idx_pairs[
+            np.where(
+                (self.class_idx_pairs[:, 0] >= start_line)
+                & (self.class_idx_pairs[:, 0] < stop_line)
+            )
+        ]
+
+        n_pixels = len(index_pairs)
+        n_batches = (n_pixels + batch_size - 1) // batch_size
+
+        # Process in batches
+        for batch_idx in range(n_batches):
+            batch_start_idx = batch_idx * batch_size
+            batch_end_idx = min((batch_idx + 1) * batch_size, n_pixels)
+            batch_pairs = index_pairs[batch_start_idx:batch_end_idx]
+
+            if len(batch_pairs) == 0:
+                continue
+
+            # Read batch of pixels
+            t0 = time.time()
+            (
+                meas_batch,
+                loc_batch,
+                obs_batch,
+                svf_batch,
+                x_atmosphere_batch,
+                sub_state_batch,
+                lbl_idx_batch,
+                valid_mask,
+            ) = batch_read_pixels(
+                batch_pairs,
+                self.rdn,
+                self.loc,
+                self.obs,
+                self.rt_state,
+                self.svf,
+                self.subs_state,
+                self.lbl,
+                self.fm.surface.analytical_iv_idx,
+                self.fm.idx_atmosphere,
+                self.fm.idx_instrument,
+                self.fm.nstate,
+                self.radiance_correction,
+            )
+            profile_times["io_read"] += time.time() - t0
+
+            if len(valid_mask) == 0:
+                continue
+
+            # Complete sub_state construction
+            for i, lbl_idx in enumerate(lbl_idx_batch):
+                sub_state_batch[i, self.fm.idx_surface] = self.subs_state[
+                    lbl_idx, 0, self.fm.surface.analytical_iv_idx
+                ]
+                sub_state_batch[i, self.fm.idx_instrument] = self.subs_state[
+                    lbl_idx, 0, self.fm.idx_instrument
+                ]
+                sub_state_batch[i][np.isnan(sub_state_batch[i])] = self.fm.init[
+                    np.isnan(sub_state_batch[i])
+                ]
+
+            # Create geometries
+            t0 = time.time()
+            geom_batch = batch_create_geometries(
+                obs_batch,
+                loc_batch,
+                svf_batch,
+                self.esd,
+                self.coszen,
+                self.config,
+            )
+            profile_times["geometry_creation"] += time.time() - t0
+
+            # Initialize x0 batch
+            x0_batch = np.zeros((len(valid_mask), self.fm.nstate))
+
+            if self.initializer == "superpixel":
+                x0_batch = sub_state_batch.copy()
+                for i in range(len(valid_mask)):
+                    x0_batch[i, self.fm.idx_atmosphere] = x_atmosphere_batch[i, :]
+
+            elif self.initializer == "algebraic":
+                t0 = time.time()
+                for i, geom in enumerate(geom_batch):
+                    x_surface, _, x_instrument = self.fm.unpack(self.fm.init.copy())
+                    rfl_est, coeffs = invert_algebraic(
+                        self.fm,
+                        x_surface,
+                        x_atmosphere_batch[i],
+                        x_instrument,
+                        meas_batch[i],
+                        geom,
+                    )
+
+                    rfl_est = self.fm.surface.fit_params(rfl_est, geom)
+
+                    x0_batch[i, :] = np.concatenate(
+                        [
+                            rfl_est,
+                            x_atmosphere_batch[i],
+                            x_instrument,
+                        ]
+                    )
+                profile_times["invert_algebraic"] += time.time() - t0
+
+            elif self.initializer == "simple":
+                for i, geom in enumerate(geom_batch):
+                    x0 = invert_simple(self.fm, meas_batch[i], geom)
+                    x0[self.fm.idx_atmosphere] = x_atmosphere_batch[i]
+                    x0_batch[i, :] = x0
+
+            else:
+                raise ValueError("No valid initializer given for AOE algorithm")
+
+            # Set geom.x_surf_init for each geometry
+            for i, geom in enumerate(geom_batch):
+                geom.x_surf_init = x0_batch[i, self.fm.idx_surface]
+
+            # Batch analytical inversion
+            t0 = time.time()
+            trajectories, uncertainties = batch_invert_analytical(
+                self.fm,
+                self.winidx,
+                meas_batch,
+                geom_batch,
+                x0_batch,
+                sub_state_batch,
+                num_iter=self.num_iter,
+            )
+            profile_times["invert_analytical"] += time.time() - t0
+
+            # Fill output arrays
+            t0 = time.time()
+            for i, valid_idx in enumerate(valid_mask):
+                actual_idx = batch_start_idx + valid_idx
+                r, c = batch_pairs[valid_idx][:2]
+
+                state_est = trajectories[i, -1, :]
+                unc = uncertainties[i, :]
+
+                full_state_est = fill_statevector(
+                    state_est,
+                    self.fm.full_idx,
+                    self.fm.full_miss,
+                    self.full_statevector,
+                )
+                output_rfl[r - start_line, c, :] = full_state_est[
+                    self.full_idx_surf_rfl
+                ]
+
+                full_unc_est = fill_statevector(
+                    unc, self.fm.full_idx, self.fm.full_miss, self.full_statevector
+                )
+                output_rfl_unc[r - start_line, c, :] = full_unc_est[
+                    self.full_idx_surf_rfl
+                ]
+
+                if self.non_rfl_outpath:
+                    output_non_rfl[r - start_line, c, :] = full_state_est[
+                        self.n_rfl_bands : self.n_rfl_bands + self.n_non_rfl_bands
+                    ]
+                    output_non_rfl_unc[r - start_line, c, :] = full_unc_est[
+                        self.n_rfl_bands : self.n_rfl_bands + self.n_non_rfl_bands
+                    ]
+            profile_times["state_fill"] += time.time() - t0
+
+        profile_times["total"] = time.time() - chunk_start
+
+        logging.info(
+            f"Analytical line chunk (BATCHED) {start_line}-{stop_line} ({n_pixels} pixels, {self.surface_class_str}): "
+            f"total={profile_times['total']:.2f}s, "
+            f"io_read={profile_times['io_read']:.2f}s ({profile_times['io_read']/profile_times['total']*100:.1f}%), "
+            f"geom={profile_times['geometry_creation']:.2f}s ({profile_times['geometry_creation']/profile_times['total']*100:.1f}%), "
+            f"alg_init={profile_times['invert_algebraic']:.2f}s ({profile_times['invert_algebraic']/profile_times['total']*100:.1f}%), "
+            f"analytical={profile_times['invert_analytical']:.2f}s ({profile_times['invert_analytical']/profile_times['total']*100:.1f}%), "
+            f"fill={profile_times['state_fill']:.2f}s ({profile_times['state_fill']/profile_times['total']*100:.1f}%), "
+            f"rate={n_pixels/profile_times['total']:.1f} px/s"
+        )
+
+        t0 = time.time()
+        # Output surface rfl
+        write_bil_chunk(
+            np.swapaxes(output_rfl, 1, 2),
+            self.rfl_outpath,
+            start_line,
+            (self.n_lines, self.n_rfl_bands, self.n_samples),
+        )
+
+        write_bil_chunk(
+            np.swapaxes(output_rfl_unc, 1, 2),
+            self.unc_outpath,
+            start_line,
+            (self.n_lines, self.n_rfl_bands, self.n_samples),
+        )
+
+        if self.non_rfl_outpath:
+            write_bil_chunk(
+                np.swapaxes(output_non_rfl, 1, 2),
+                self.non_rfl_outpath,
+                start_line,
+                (self.n_lines, self.n_non_rfl_bands, self.n_samples),
+            )
+            write_bil_chunk(
+                np.swapaxes(output_non_rfl_unc, 1, 2),
+                self.non_rfl_unc_outpath,
+                start_line,
+                (self.n_lines, self.n_non_rfl_bands, self.n_samples),
+            )
+
+        profile_times["io_write"] = time.time() - t0
+        logging.info(
+            f"Chunk {start_line}-{stop_line} write time: {profile_times['io_write']:.2f}s"
+        )
+
     def run_chunks(self, line_breaks: tuple, fill_value: float = -9999.0) -> None:
         """
         TODO: Description
         """
+        # Profiling timers
+        profile_times = {
+            "io_read": 0.0,
+            "geometry_creation": 0.0,
+            "invert_algebraic": 0.0,
+            "invert_analytical": 0.0,
+            "state_fill": 0.0,
+            "io_write": 0.0,
+            "total": 0.0,
+        }
+        chunk_start = time.time()
+
         # Unpack arguments
         start_line, stop_line = line_breaks
 
@@ -509,6 +1087,7 @@ class Worker(object):
         ]
 
         for r, c, *_ in index_pairs:
+            t0 = time.time()
             meas = self.rdn[r, c, :]
 
             if self.radiance_correction is not None:
@@ -516,7 +1095,9 @@ class Worker(object):
 
             if np.all(meas < 0):
                 continue
+            profile_times["io_read"] += time.time() - t0
 
+            t0 = time.time()
             geom = Geometry(
                 obs=self.obs[r, c, :],
                 loc=self.loc[r, c, :],
@@ -525,6 +1106,7 @@ class Worker(object):
                 coszen=self.coszen,
                 full_config=self.config,
             )
+            profile_times["geometry_creation"] += time.time() - t0
 
             # "Atmospheric" state ALWAYS comes from all bands in the
             # atm_interpolated file
@@ -559,6 +1141,7 @@ class Worker(object):
                 x0[self.fm.idx_atmosphere] = x_atmosphere
 
             elif self.initializer == "algebraic":
+                t0 = time.time()
                 x_surface, _, x_instrument = self.fm.unpack(self.fm.init.copy())
                 rfl_est, coeffs = invert_algebraic(
                     self.fm,
@@ -578,6 +1161,7 @@ class Worker(object):
                         x_instrument,
                     ]
                 )
+                profile_times["invert_algebraic"] += time.time() - t0
 
             elif self.initializer == "simple":
                 x0 = invert_simple(self.fm, meas, geom)
@@ -589,6 +1173,7 @@ class Worker(object):
             # NOTE: this line needs to be here to ensure geom.surf_cmp_init is populated
             geom.x_surf_init = x0[self.fm.idx_surface]
 
+            t0 = time.time()
             states, unc = invert_analytical(
                 self.fm,
                 self.winidx,
@@ -599,7 +1184,9 @@ class Worker(object):
                 num_iter=self.num_iter,
             )
             state_est = states[-1]
+            profile_times["invert_analytical"] += time.time() - t0
 
+            t0 = time.time()
             full_state_est = fill_statevector(
                 state_est, self.fm.full_idx, self.fm.full_miss, self.full_statevector
             )
@@ -609,6 +1196,7 @@ class Worker(object):
                 unc, self.fm.full_idx, self.fm.full_miss, self.full_statevector
             )
             output_rfl_unc[r - start_line, c, :] = full_unc_est[self.full_idx_surf_rfl]
+            profile_times["state_fill"] += time.time() - t0
 
             full_state_est[len(self.full_idx_surf_rfl) : self.n_non_rfl_bands]
             # Save the non_rfl portion
@@ -620,11 +1208,21 @@ class Worker(object):
                     self.n_rfl_bands : self.n_rfl_bands + self.n_non_rfl_bands
                 ]
 
+        profile_times["total"] = time.time() - chunk_start
+        n_pixels = len(index_pairs)
+
         logging.info(
-            f"Analytical line writing lines: {start_line} to {stop_line}. "
-            f"Surface: {self.surface_class_str}"
+            f"Analytical line chunk {start_line}-{stop_line} ({n_pixels} pixels, {self.surface_class_str}): "
+            f"total={profile_times['total']:.2f}s, "
+            f"io_read={profile_times['io_read']:.2f}s ({profile_times['io_read']/profile_times['total']*100:.1f}%), "
+            f"geom={profile_times['geometry_creation']:.2f}s ({profile_times['geometry_creation']/profile_times['total']*100:.1f}%), "
+            f"alg_init={profile_times['invert_algebraic']:.2f}s ({profile_times['invert_algebraic']/profile_times['total']*100:.1f}%), "
+            f"analytical={profile_times['invert_analytical']:.2f}s ({profile_times['invert_analytical']/profile_times['total']*100:.1f}%), "
+            f"fill={profile_times['state_fill']:.2f}s ({profile_times['state_fill']/profile_times['total']*100:.1f}%), "
+            f"rate={n_pixels/profile_times['total']:.1f} px/s"
         )
 
+        t0 = time.time()
         # Output surface rfl
         write_bil_chunk(
             np.swapaxes(output_rfl, 1, 2),
@@ -657,6 +1255,11 @@ class Worker(object):
                 (self.n_lines, self.n_non_rfl_bands, self.n_samples),
             )
 
+        profile_times["io_write"] = time.time() - t0
+        logging.info(
+            f"Chunk {start_line}-{stop_line} write time: {profile_times['io_write']:.2f}s"
+        )
+
 
 @click.command(name="analytical_line")
 @click.argument("rdn_file")
@@ -674,6 +1277,15 @@ class Worker(object):
 @click.option("--atm_file", help="TODO", type=str, default=None)
 @click.option("--loglevel", help="TODO", type=str, default="INFO")
 @click.option("--logfile", help="TODO", type=str, default=None)
+@click.option(
+    "--use_batched",
+    help="Use batched vectorized processing",
+    is_flag=True,
+    default=False,
+)
+@click.option(
+    "--batch_size", help="Batch size for vectorized processing", type=int, default=100
+)
 def cli(**kwargs):
     """Execute the analytical line algorithm"""
 

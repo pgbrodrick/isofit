@@ -224,11 +224,18 @@ class SRTMnetModel(torch.nn.Module):
         Returns:
             np.array: emulated output
         """
-        # Handle numpy input
-        x_tensor = [
-            _x.compute() if isinstance(_x, da.Array) else _x for _x in surrogate_data
-        ]
-        x_tensor = [torch.as_tensor(_x, dtype=torch.float32) for _x in x_tensor]
+        # Handle numpy input, but allow callers to prebuild tensors to avoid
+        # repeatedly recasting shared component inputs across emulator calls.
+        x_tensor = []
+        for _x in surrogate_data:
+            if isinstance(_x, torch.Tensor):
+                x_tensor.append(_x)
+                continue
+
+            if isinstance(_x, da.Array):
+                _x = _x.compute()
+
+            x_tensor.append(torch.as_tensor(_x, dtype=torch.float32))
         n = x_tensor[0].shape[0]
 
         outdict = {}
@@ -568,14 +575,17 @@ class SimulatedModtranRT(BaseAtmosphere, Writer):
             response_scaler = self.aux.get("response_scaler", 100.0)
             response_offset = self.aux.get("response_offset", 0.0)
 
+            sim_values = np.asarray(data.values, dtype=np.float32)
+            resample_values = np.asarray(resample.values, dtype=np.float32)
+
             emulator = SRTMnetModel(
                 input_file=self.config.emulator_file,
                 key="3c",
                 n_cores=self.n_cores,
             )
             lp = emulator.predict(
-                [data.values],  # surrogate data (6S)
-                [resample.values],  #  stacked 3c data interpolated to emulator wl
+                [torch.as_tensor(sim_values)],  # surrogate data (6S)
+                [resample_values],  # stacked 3c data interpolated to emulator wl
                 batch_size=self.config.emulator_batch_size,
                 response_scaler=[response_scaler],
                 response_offset=[response_offset],
@@ -625,6 +635,15 @@ class SimulatedModtranRT(BaseAtmosphere, Writer):
                 "rhoatm": ["rhoatm"],
                 "sphalb": ["sphalb"],
             }
+            component_names = set().union(*mapping.values())
+            sim_values = {
+                name: torch.as_tensor(np.asarray(sim[name].values, dtype=np.float32))
+                for name in component_names
+            }
+            resample_values = {
+                name: np.asarray(resample[name].values, dtype=np.float32)
+                for name in component_names
+            }
             # for key in aux_rt_quantities:
             for key in mapping.keys():
                 key_start_time = time.time()
@@ -641,10 +660,10 @@ class SimulatedModtranRT(BaseAtmosphere, Writer):
                 response_offset = [self.aux["response_offset"][x] for x in mapping[key]]
 
                 lp = emulator.predict(
-                    [sim[x].values for x in mapping[key]],  # surrogate data (6S)
+                    [sim_values[x] for x in mapping[key]],  # surrogate data (6S)
                     [
-                        resample[x].values for x in mapping[key]
-                    ],  #  6S data interpolated to emulator wl
+                        resample_values[x] for x in mapping[key]
+                    ],  # 6S data interpolated to emulator wl
                     batch_size=self.config.emulator_batch_size,
                     response_scaler=response_scaler,
                     response_offset=response_offset,

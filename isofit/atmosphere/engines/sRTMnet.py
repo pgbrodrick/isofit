@@ -180,7 +180,8 @@ class SRTMnetModel(torch.nn.Module):
             )
             return out_r
 
-    def batch_coszen(self, resample_dict: dict, batch_slice: slice):
+    @staticmethod
+    def batch_coszen(resample_dict: dict, batch_slice: slice):
         """Return the active batch view of the emulator coszen values."""
         if resample_dict is None:
             return None
@@ -671,57 +672,112 @@ class SimulatedModtranRT(BaseAtmosphere, Writer):
 
             total_start_time = time.time()
 
-            mapping = {
-                "dir-dir": ["transm_down_dir", "transm_up_dir"],
-                "dir-dif": ["transm_down_dir", "transm_up_dif"],
-                "dif-dir": ["transm_down_dif", "transm_up_dir"],
-                "dif-dif": ["transm_down_dif", "transm_up_dif"],
-                "rhoatm": ["rhoatm"],
-                "sphalb": ["sphalb"],
+            component_names = [
+                "transm_down_dir",
+                "transm_up_dir",
+                "transm_down_dif",
+                "transm_up_dif",
+                "rhoatm",
+                "sphalb",
+            ]
+            coupled_names = {
+                "dir-dir": ("transm_down_dir", "transm_up_dir"),
+                "dir-dif": ("transm_down_dir", "transm_up_dif"),
+                "dif-dir": ("transm_down_dif", "transm_up_dir"),
+                "dif-dif": ("transm_down_dif", "transm_up_dif"),
             }
-            component_names = set().union(*mapping.values())
-            sim_values = {
-                name: torch.as_tensor(np.asarray(sim[name].values, dtype=np.float32))
-                for name in component_names
-            }
-            resample_values = {
-                name: np.asarray(resample[name].values, dtype=np.float32)
-                for name in component_names
-            }
-            # for key in aux_rt_quantities:
-            for key in mapping.keys():
-                key_start_time = time.time()
-                Logger.debug(f"Loading emulator {key}")
 
-                emulator = SRTMnetModel(
+            Logger.info("Preparing unique 6c component emulators")
+            emulators = {}
+            sim_values = {}
+            resample_values = {}
+            response_scaler = {}
+            response_offset = {}
+            for name in component_names:
+                Logger.debug(f"Loading emulator {name}")
+                emulators[name] = SRTMnetModel(
                     input_file=self.config.emulator_file,
-                    key=key,
+                    key=name,
                     n_cores=self.n_cores,
                 )
-
-                Logger.info(f"Emulating {key}")
-                response_scaler = [self.aux["response_scaler"][x] for x in mapping[key]]
-                response_offset = [self.aux["response_offset"][x] for x in mapping[key]]
-
-                lp = emulator.predict(
-                    [sim_values[x] for x in mapping[key]],  # surrogate data (6S)
-                    [
-                        resample_values[x] for x in mapping[key]
-                    ],  # 6S data interpolated to emulator wl
-                    batch_size=self.config.emulator_batch_size,
-                    response_scaler=response_scaler,
-                    response_offset=response_offset,
-                    resample_dict=resample_dict,
+                sim_values[name] = torch.as_tensor(
+                    np.asarray(sim[name].values, dtype=np.float32)
                 )
-                Logger.debug(f"Cleanup {key}")
-                del emulator
+                resample_values[name] = np.asarray(
+                    resample[name].values, dtype=np.float32
+                )
+                response_scaler[name] = self.aux["response_scaler"][name]
+                response_offset[name] = self.aux["response_offset"][name]
 
-                for outkey in lp.keys():
-                    self.lut[outkey] = lp[outkey].T.reshape(outshape)
-                self.lut.flush()
+            output_lists = {key: [] for key in component_names + list(coupled_names)}
+            batch_size = self.config.emulator_batch_size
+            n = sim_values[component_names[0]].shape[0]
+            H = resample_dict["emulator_H"]
+            sol_irr = resample_dict["emulator_sol_irr"]
 
-                elapsed_time = time.time() - key_start_time
-                Logger.debug(f"Predict time ({key}): {elapsed_time} seconds")
+            Logger.info("Emulating unique 6c components and coupled outputs")
+            with torch.inference_mode():
+                for i in range(0, n, batch_size):
+                    batch_slice = slice(i, min(i + batch_size, n))
+                    batch_coszen = SRTMnetModel.batch_coszen(resample_dict, batch_slice)
+                    component_batch = {}
+
+                    for name in component_names:
+                        batch = sim_values[name][batch_slice].to(emulators[name].device)
+                        out = emulators[name](batch, name).cpu().numpy()
+                        out /= response_scaler[name]
+                        out += response_offset[name]
+                        out += resample_values[name][batch_slice]
+                        component_batch[name] = out
+
+                    for name in (
+                        "transm_down_dir",
+                        "transm_up_dir",
+                        "transm_down_dif",
+                        "transm_up_dif",
+                        "sphalb",
+                    ):
+                        output_lists[name].append(
+                            resample_spectrum(
+                                component_batch[name],
+                                resample_dict["emu_wl"],
+                                resample_dict["wl"],
+                                resample_dict["fwhm"],
+                                H=H,
+                            )
+                        )
+
+                    rhoatm = units.transm_to_rdn(
+                        component_batch["rhoatm"],
+                        batch_coszen,
+                        sol_irr,
+                    )
+                    output_lists["rhoatm"].append(
+                        resample_spectrum(
+                            rhoatm,
+                            resample_dict["emu_wl"],
+                            resample_dict["wl"],
+                            resample_dict["fwhm"],
+                            H=H,
+                        )
+                    )
+
+                    for outkey, (down_key, up_key) in coupled_names.items():
+                        product = component_batch[down_key] * component_batch[up_key]
+                        product = units.transm_to_rdn(product, batch_coszen, sol_irr)
+                        output_lists[outkey].append(
+                            resample_spectrum(
+                                product,
+                                resample_dict["emu_wl"],
+                                resample_dict["wl"],
+                                resample_dict["fwhm"],
+                                H=H,
+                            )
+                        )
+
+            for outkey, values in output_lists.items():
+                self.lut[outkey] = np.concatenate(values, axis=0).T.reshape(outshape)
+            self.lut.flush()
 
             # predicts.attrs["component_mode"] = "6c"
             elapsed_time = time.time() - total_start_time

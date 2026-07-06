@@ -251,23 +251,45 @@ class SRTMnetModel(torch.nn.Module):
         if is_paired:
             outdict[self.product_name] = []
 
+        profile = Logger.isEnabledFor(logging.DEBUG)
+        prep_time = 0.0
+        forward_time = 0.0
+        post_time = 0.0
+        resample_time = 0.0
+        paired_time = 0.0
+
         for i in range(0, n, batch_size):
             product = None
             batch_slice = slice(i, min(i + batch_size, n))
             batch_coszen = self.batch_coszen(resample_dict, batch_slice)
             for _key, key in enumerate(self.weights.keys()):
+                if profile:
+                    t0 = time.time()
                 batch = x_tensor[_key][batch_slice].to(self.device)
+                if profile:
+                    prep_time += time.time() - t0
 
+                if profile:
+                    t0 = time.time()
                 out = self(batch, key)
                 out = out.cpu().numpy()
+                if profile:
+                    forward_time += time.time() - t0
+
+                if profile:
+                    t0 = time.time()
                 if response_scaler is not None:
                     out /= response_scaler[_key]
                 if response_offset is not None:
                     out += response_offset[_key]
                 out += surrogate_data_emulator_wl[_key][batch_slice]
+                if profile:
+                    post_time += time.time() - t0
 
                 # Resample the direct product, converting to radiance for rhoatm
                 if key != "3c":
+                    if profile:
+                        t0 = time.time()
                     outdict[key].append(
                         self.batch_resample(
                             out,
@@ -276,6 +298,8 @@ class SRTMnetModel(torch.nn.Module):
                             coszen=batch_coszen,
                         )
                     )
+                    if profile:
+                        resample_time += time.time() - t0
 
                     # For paired terms, convert to radiance and multiply
                     if is_paired:
@@ -286,6 +310,8 @@ class SRTMnetModel(torch.nn.Module):
                 else:
                     nc = int(out.shape[1] / len(self.component_keys))
                     for _ckey, ckey in enumerate(self.component_keys):
+                        if profile:
+                            t0 = time.time()
                         outdict[ckey].append(
                             self.batch_resample(
                                 out[:, _ckey * nc : (_ckey + 1) * nc],
@@ -293,9 +319,13 @@ class SRTMnetModel(torch.nn.Module):
                                 resample_dict=resample_dict,
                             )
                         )
+                        if profile:
+                            resample_time += time.time() - t0
 
             if is_paired:  # only happens with 6c
                 if resample_dict is not None:
+                    if profile:
+                        t0 = time.time()
                     product = units.transm_to_rdn(
                         product,
                         batch_coszen,
@@ -308,11 +338,25 @@ class SRTMnetModel(torch.nn.Module):
                         resample_dict["fwhm"],
                         H=resample_dict["emulator_H"],
                     )
+                    if profile:
+                        paired_time += time.time() - t0
                 outdict[self.product_name].append(product)
 
         # Concatenate all outputs from all batches
         for key in outdict.keys():
             outdict[key] = np.concatenate(outdict[key], axis=0)
+
+        if profile:
+            Logger.debug(
+                "predict profile key=%s batches=%d prep=%.3fs forward=%.3fs post=%.3fs resample=%.3fs paired=%.3fs",
+                getattr(self, "product_name", list(self.weights.keys())),
+                len(range(0, n, batch_size)),
+                prep_time,
+                forward_time,
+                post_time,
+                resample_time,
+                paired_time,
+            )
 
         return outdict
 

@@ -507,6 +507,12 @@ def load(
             )
             chunks = None
 
+        elif engine == "zarr":
+            Logger.debug(
+                "Zarr store with load enabled, disabling default chunking for performance"
+            )
+            chunks = None
+
         elif path.is_file() and path.stat().st_size < units.byte_string_to_float("4gb"):
             Logger.debug(
                 "LUT store detected less than 4gb and load enabled, disabling default chunking for performance"
